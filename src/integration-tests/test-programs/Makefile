@@ -33,10 +33,10 @@ count\ space.o: count\ space.c
 # debug-prefix-map used like this is to put an "incorrect"
 # DW_AT_comp_dir in the debug info
 cwd.o: cwd.c
-	$(CC) -fdebug-prefix-map=$(CURDIR)=.  -c $< -g3 -O0
+	$(CC) -fdebug-prefix-map="$(CURDIR)"=.  -c $< -g3 -O0
 
 cwd.exe: cwd.o
-	$(LINK) -fdebug-prefix-map=$(CURDIR)=.
+	$(LINK) -fdebug-prefix-map="$(CURDIR)"=.
 	mkdir -p Debug
 	cp cwd.exe Debug
 	mkdir -p EmptyDir
@@ -48,10 +48,12 @@ empty: empty.o
 # it otherwise
 bug275-测试.o: empty.c
 	cp empty.c bug275-测试.c
-	$(CC) -c bug275-测试.c -g3 -O0
+	$(CC) -c empty.c -g3 -O0
+	cp empty.o bug275-测试.c
 
 bug275-测试: bug275-测试.o
-	$(LINK)
+	$(CC) -o empty empty.o
+	cp empty bug275-测试
 
 evaluate: evaluate.o
 	$(LINK)

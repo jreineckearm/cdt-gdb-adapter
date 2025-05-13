@@ -23,11 +23,12 @@ import {
 
 describe('launch', function () {
     let dc: CdtDebugClient;
-    const emptyProgram = path.join(testProgramsDir, 'empty');
-    const emptySpaceProgram = path.join(testProgramsDir, 'empty space');
+    const fileEnding = os.platform() === 'win32' ? '.exe' : '';
+    const emptyProgram = path.join(testProgramsDir, 'empty' + fileEnding);
+    const emptySpaceProgram = path.join(testProgramsDir, 'empty space' + fileEnding);
     const emptySrc = path.join(testProgramsDir, 'empty.c');
     const emptySpaceSrc = path.join(testProgramsDir, 'empty space.c');
-    const unicodeProgram = path.join(testProgramsDir, 'bug275-测试');
+    const unicodeProgram = path.join(testProgramsDir, 'bug275-测试' + fileEnding);
     // the name of this file is short enough to work around https://sourceware.org/bugzilla/show_bug.cgi?id=30618
     const unicodeSrc = path.join(testProgramsDir, 'bug275-测试.c');
 
