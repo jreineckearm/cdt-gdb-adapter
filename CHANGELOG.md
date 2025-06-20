@@ -1,5 +1,9 @@
 # Change Log
 
+## Unreleased
+
+- Updated NPM dependencies, Node and Python requirements, and Typescript version. Code changes as required for this.
+
 ## 1.0.10
 
 - Refactor [#362](https://github.com/eclipse-cdt-cloud/cdt-gdb-adapter/issues/362): Cannot execute CLI commands like > interrupt from Debug Console while CPU is running
