@@ -432,12 +432,22 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                 this.waitPaused = resolve;
             });
             if (this.gdb.isNonStopMode()) {
-                const threadInfo = await mi.sendThreadInfoRequest(this.gdb, {});
-
-                this.waitPausedThreadId = parseInt(
-                    threadInfo['current-thread-id'],
-                    10
+                const threadIdResult = await mi.sendDataEvaluateExpression(
+                    this.gdb,
+                    this.gdb.gdbVersionAtLeast('7.11')
+                        ? '$_gthread'
+                        : '$_thread'
                 );
+
+                // Fallback to -1 means things still happen to work
+                // because "--thread -1" is equivalent to omitting
+                // "--thread" (that is probably an implementation detail
+                // though).
+                this.waitPausedThreadId =
+                    threadIdResult.value !== undefined &&
+                    threadIdResult.value !== 'void'
+                        ? parseInt(threadIdResult.value, 10)
+                        : -1;
                 this.gdb.pause(this.waitPausedThreadId);
             } else {
                 this.gdb.pause();
@@ -1931,7 +1941,8 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                     if (
                         this.waitPaused &&
                         resultData.reason === 'signal-received' &&
-                        this.waitPausedThreadId === id
+                        (this.waitPausedThreadId === id ||
+                            this.waitPausedThreadId === -1)
                     ) {
                         suppressHandleGDBStopped = true;
                     }
