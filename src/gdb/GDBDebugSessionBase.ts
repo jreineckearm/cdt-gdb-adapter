@@ -2121,8 +2121,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                         );
                     }
                     updateThreads.forEach(
-                        (thread) =>
-                            (thread.lastRunToken = token)
+                        (thread) => (thread.lastRunToken = token)
                     );
                 }
                 break;
