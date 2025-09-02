@@ -129,6 +129,8 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
     protected static frozenRequestArguments?: { request?: string };
 
     protected gdb!: IGDBBackend;
+    protected backdoorGdb?: IGDBBackend;
+
     protected isAttach = false;
     // isRunning === true means there are no threads stopped.
     protected isRunning = false;
@@ -330,7 +332,8 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
     }
 
     protected async setupCommonLoggerAndBackends(
-        args: LaunchRequestArguments | AttachRequestArguments
+        args: LaunchRequestArguments | AttachRequestArguments,
+        backdoor?: boolean
     ) {
         logger.setup(
             args.verbose ? Logger.LogLevel.Verbose : Logger.LogLevel.Warn,
@@ -338,19 +341,24 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         );
 
         const manager = await this.backendFactory.createGDBManager(this, args);
-        this.gdb = await this.backendFactory.createBackend(this, manager, args);
+        const gdb = await this.backendFactory.createBackend(this, manager, args);
+        if (backdoor){
+            this.backdoorGdb = gdb;
+        } else {
+            this.gdb = gdb;
+        }
 
-        this.gdb.on('consoleStreamOutput', (output, category) => {
+        gdb.on('consoleStreamOutput', (output, category) => {
             const messageToPrint = this.switchOutputToError(output, category);
             this.sendEvent(
                 new OutputEvent(messageToPrint.output, messageToPrint.category)
             );
         });
 
-        this.gdb.on('execAsync', (resultClass, resultData) =>
+        gdb.on('execAsync', (resultClass, resultData) =>
             this.handleGDBAsync(resultClass, resultData)
         );
-        this.gdb.on('notifyAsync', (resultClass, resultData) =>
+        gdb.on('notifyAsync', (resultClass, resultData) =>
             this.handleGDBNotify(resultClass, resultData)
         );
     }
@@ -453,9 +461,10 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
     }
 
     protected async spawn(
-        args: LaunchRequestArguments | AttachRequestArguments
+        args: LaunchRequestArguments | AttachRequestArguments,
+        gdb: IGDBBackend = this.gdb
     ) {
-        return this.gdb?.spawn(args);
+        return gdb?.spawn(args);
     }
 
     /**
@@ -1829,10 +1838,11 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         response: DebugProtocol.ReadMemoryResponse,
         args: DebugProtocol.ReadMemoryArguments
     ): Promise<void> {
+        const gdb = this.backdoorGdb ?? this.gdb;
         try {
             if (args.count) {
                 const result = await mi.sendDataReadMemoryBytes(
-                    this.gdb,
+                    gdb,
                     args.memoryReference,
                     args.count,
                     args.offset

@@ -153,6 +153,25 @@ export class GDBTargetDebugSession extends GDBDebugSession {
         args: TargetLaunchRequestArguments | TargetAttachRequestArguments
     ) {
         await super.setupCommonLoggerAndBackends(args);
+        if (args.useBackdoor) {
+            const backdoorArgs: TargetAttachRequestArguments & { request: 'launch' | 'attach' } = {
+                ...args,
+                imageAndSymbols: undefined,
+                openGdbConsole: undefined,
+                target: {
+                    type: 'extended-remote',
+                    connectCommands: [
+                        'set mem inaccessible-by-default off',
+                        'set stack-cache off',
+                        'set remote interrupt-on-connect off',
+                        `target extended-remote ${args.target?.port ?? '3333'}`
+                    ],
+                },
+                request: 'attach',
+                initCommands: undefined,
+            };
+            await super.setupCommonLoggerAndBackends(backdoorArgs, true);
+        }
 
         this.gdbserverProcessManager =
             await this.gdbserverFactory?.createGDBServerManager(args);
@@ -512,6 +531,10 @@ export class GDBTargetDebugSession extends GDBDebugSession {
             // Start GDB process
             this.logGDBRemote(`spawn GDB\n`);
             await this.spawn(args);
+            if (args.useBackdoor) {
+                this.logGDBRemote(`spawn backdoor GDB\n`);
+                await this.spawn(args, this.backdoorGdb);
+            }
             await this.setSessionState(SessionState.GDB_LAUNCHED);
 
             // Register exit-handler
@@ -539,6 +562,7 @@ export class GDBTargetDebugSession extends GDBDebugSession {
                 }
                 await this.setExitSessionRequest(ExitSessionRequest.EXIT);
             });
+            // TODO: handle backdoor GDB
 
             // Load files and configure GDB
             if (args.program !== undefined && args.program !== '') {
@@ -566,6 +590,13 @@ export class GDBTargetDebugSession extends GDBDebugSession {
                     }
                 }
             }
+
+            if (this.backdoorGdb) {
+                await this.executeOrAbort(
+                    this.backdoorGdb.sendEnablePrettyPrint.bind(this.backdoorGdb)
+                )();
+            }
+            // TODO: check if to load image/symbol files
 
             await this.setSessionState(SessionState.GDB_READY);
 
@@ -612,6 +643,28 @@ export class GDBTargetDebugSession extends GDBDebugSession {
                     )
                 );
             }
+
+            if (args.useBackdoor && this.backdoorGdb) {
+                this.logGDBRemote('connectCommands for backdoor');
+                const connectCommands: string[] = [
+                    'set mem inaccessible-by-default off',
+                    'set stack-cache off',
+                    'set code-cache off',
+                    'mem 0 0 nocache',
+                    'maint flush dcache',
+                    // 'set remote interrupt-on-connect off',
+                    `target extended-remote :${args.target?.port ?? '3333'}`
+                ];
+                await this.executeOrAbort(this.backdoorGdb.sendCommands.bind(this.backdoorGdb))(
+                    connectCommands
+                );
+                this.sendEvent(
+                    new OutputEvent(
+                        'connected to backdoor using internally set connectCommands'
+                    )
+                );
+            }
+
 
             await this.setSessionState(SessionState.CONNECTED);
 
@@ -700,7 +753,7 @@ export class GDBTargetDebugSession extends GDBDebugSession {
             this.serialPort.close();
 
         // Only try clean GDB exit if process still up
-        if (this.gdb.isActive()) {
+        if (this.gdb?.isActive()) {
             try {
                 // Depending on disconnect scenario, we may lose
                 // GDB backend while sending commands for graceful
@@ -713,9 +766,15 @@ export class GDBTargetDebugSession extends GDBDebugSession {
                 ) {
                     // Need to pause first, then disconnect and exit.
                     await this.pauseIfNeeded(true);
+                    if (this.backdoorGdb?.isActive()) {
+                        await this.backdoorGdb.sendCommand('disconnect');
+                    }
                     await this.gdb.sendCommand('disconnect');
                 }
 
+                if (this.backdoorGdb?.isActive()) {
+                    await this.backdoorGdb.sendGDBExit();
+                }
                 await this.gdb.sendGDBExit();
                 this.sendEvent(new OutputEvent('gdb exited\n', 'server'));
             } catch {
