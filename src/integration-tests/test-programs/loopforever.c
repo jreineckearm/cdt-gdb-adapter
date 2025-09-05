@@ -12,7 +12,7 @@ int inner2(void) {
     return var2++;
 }
 
-int main(int argc, char *argv[])
+int main(int argc, char *argv[])  // main function
 {
     time_t start_time = time(NULL);
     while (stop == 0) {
