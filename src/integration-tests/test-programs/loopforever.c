@@ -12,9 +12,9 @@ int inner2(void) {
     return var2++;
 }
 
-int main(int argc, char *argv[])  // main function
+int main(int argc, char *argv[])
 {
-    time_t start_time = time(NULL);
+    time_t start_time = time(NULL);  // main function
     while (stop == 0) {
         if (time(NULL) > start_time + 10) {
             // Don't actually loop forever as that can hang tests

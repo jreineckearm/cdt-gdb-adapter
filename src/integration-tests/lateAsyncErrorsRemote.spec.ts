@@ -13,6 +13,7 @@ import { CdtDebugClient } from './debugClient';
 import {
     fillDefaults,
     gdbAsync,
+    getScopes,
     isRemoteTest,
     resolveLineTagLocations,
     standardBeforeEach,
@@ -20,7 +21,7 @@ import {
 } from './utils';
 import { TargetLaunchRequestArguments } from '../types/session';
 
-describe('lateAsyncErrorsRemote', async function () {
+describe.only('lateAsyncErrorsRemote', async function () {
     let dc: CdtDebugClient;
     const program = path.join(testProgramsDir, 'loopforever');
     const src = path.join(testProgramsDir, 'loopforever.c');
@@ -50,6 +51,13 @@ describe('lateAsyncErrorsRemote', async function () {
             this.skip();
         }
 
+        await Promise.all([
+            dc.waitForEvent('stopped'),
+            dc.configurationDoneRequest(),
+        ]);
+
+        const scope = await getScopes(dc);
+
         // Set breakpoint at main
         await dc.setBreakpointsRequest({
             source: { path: src },
@@ -57,13 +65,11 @@ describe('lateAsyncErrorsRemote', async function () {
         });
 
         await Promise.all([
-            dc.waitForEvent('stopped'),
-            dc.configurationDoneRequest(),
+            dc.assertStoppedLocation('breakpoint', {
+                line: lineTags['main function'],
+                path: src,
+            }),
+            dc.continueRequest({ threadId: scope.thread.id }),
         ]);
-
-        await dc.assertStoppedLocation('breakpoint', {
-            line: lineTags['main function'],
-            path: src,
-        });
     });
 });
