@@ -10,7 +10,14 @@
 
 import * as path from 'path';
 import { CdtDebugClient } from './debugClient';
-import { fillDefaults, gdbAsync, isRemoteTest, resolveLineTagLocations, standardBeforeEach, testProgramsDir } from './utils';
+import {
+    fillDefaults,
+    gdbAsync,
+    isRemoteTest,
+    resolveLineTagLocations,
+    standardBeforeEach,
+    testProgramsDir,
+} from './utils';
 import { TargetLaunchRequestArguments } from '../types/session';
 
 describe('lateAsyncErrorsRemote', async function () {
@@ -54,8 +61,9 @@ describe('lateAsyncErrorsRemote', async function () {
             dc.configurationDoneRequest(),
         ]);
 
-        await dc.assertStoppedLocation('breakpoint', { line: lineTags['main function'], path: src });
-
+        await dc.assertStoppedLocation('breakpoint', {
+            line: lineTags['main function'],
+            path: src,
+        });
     });
-
 });
