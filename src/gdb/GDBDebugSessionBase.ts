@@ -335,7 +335,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         );
 
         const manager = await this.backendFactory.createGDBManager(this, args);
-        const gdb = await this.backendFactory.createBackend(this, manager, args);
+        const gdb = await this.backendFactory.createBackend(this, manager, args, auxBackend ? 'AUX-GDB' : undefined);
         if (auxBackend){
             this.auxGdb = gdb;
         } else {
@@ -2034,10 +2034,17 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         response: DebugProtocol.ReadMemoryResponse,
         args: DebugProtocol.ReadMemoryArguments
     ): Promise<void> {
+        // TODO: Make const, is 'let' for debugging purposes
+        let gdb;
+        if (this.auxGdb) {
+            gdb = this.auxGdb;
+        } else {
+            gdb = this.gdb;
+        }
         try {
             if (args.count) {
                 const result = await mi.sendDataReadMemoryBytes(
-                    this.auxGdb ?? this.gdb,
+                    gdb,
                     args.memoryReference,
                     args.count,
                     args.offset
