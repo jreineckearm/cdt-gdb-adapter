@@ -80,9 +80,9 @@ const AuxiliaryConnectCommands = [
     'set mem inaccessible-by-default off',
     'set stack-cache off',
     'set code-cache off',
-    'mem 0 0 nocache',
+    'mem 0 -1 nocache',
     'maint flush dcache',
-    // 'set remote interrupt-on-connect off',
+    'set remote interrupt-on-connect off',
 ];
 
 export class GDBTargetDebugSession extends GDBDebugSession {
@@ -612,24 +612,16 @@ export class GDBTargetDebugSession extends GDBDebugSession {
 
             await this.setSessionState(SessionState.GDB_READY);
 
+            const targetPort = target.port;
+            const targetHost = targetPort ? (target.host ?? 'localhost') : undefined;
+            const targetString = targetHost ? `${targetHost}:${targetPort}` : undefined;
+
             // Connect to remote server
             if (target.connectCommands === undefined) {
                 this.targetType =
                     target.type !== undefined ? target.type : 'remote';
-                let defaultTarget: string[];
-                if (target.port !== undefined) {
-                    defaultTarget = [
-                        target.host !== undefined
-                            ? `${target.host}:${target.port}`
-                            : `localhost:${target.port}`,
-                    ];
-                } else {
-                    defaultTarget = [];
-                }
-                const targetParameters =
-                    target.parameters !== undefined
-                        ? target.parameters
-                        : defaultTarget;
+                const defaultTarget = targetString ? [targetString] : [];
+                const targetParameters = target.parameters ?? defaultTarget;
                 await this.executeOrAbort(mi.sendTargetSelectRequest.bind(mi))(
                     this.gdb,
                     {
@@ -661,7 +653,7 @@ export class GDBTargetDebugSession extends GDBDebugSession {
                 this.logGDBRemote('connect to auxiliary GDB');
                 const connectCommands: string[] = [
                     ...AuxiliaryConnectCommands,
-                    `target extended-remote :${args.target?.port ?? '3333'}`
+                    `target extended-remote ${targetString}`
                 ];
                 await this.executeOrAbort(this.auxGdb.sendCommands.bind(this.auxGdb))(
                     connectCommands
