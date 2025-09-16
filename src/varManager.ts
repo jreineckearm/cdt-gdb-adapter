@@ -25,17 +25,21 @@ export class VarManager {
         this.gdb = gdb;
     }
 
-    public getKey(frameRef: FrameReference, depth: number): string {
-        return `frame${frameRef.frameId}_thread${frameRef.threadId}_depth${depth}`;
+    public getKey(frameRef: FrameReference | undefined, depth: number): string {
+        //return `frame${frameRef.frameId}_thread${frameRef.threadId}_depth${depth}`;
+        return `frame${frameRef?.frameId ? frameRef.frameId : ''}_thread${frameRef?.threadId ? frameRef.threadId : ''}_depth${depth}`;
     }
 
     public getVars(
         frameRef: FrameReference | undefined,
         depth: number
     ): VarObjType[] | undefined {
+        /*
         return frameRef
             ? this.variableMap.get(this.getKey(frameRef, depth))
             : undefined;
+        */
+        return this.variableMap.get(this.getKey(frameRef, depth));
     }
 
     public getVar(

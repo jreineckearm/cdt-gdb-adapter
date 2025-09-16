@@ -1723,13 +1723,14 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
     protected async doEvaluateRequest(
         response: DebugProtocol.EvaluateResponse,
         args: DebugProtocol.EvaluateArguments,
-        alwaysAllowCliCommand: boolean // if true, allows evaluation of expression without a frameId
+        _alwaysAllowCliCommand: boolean // if true, allows evaluation of expression without a frameId
     ): Promise<void> {
         response.body = {
             result: 'Error: could not evaluate expression',
             variablesReference: 0,
         }; // default response
         try {
+            /*
             const allowCliCommand =
                 alwaysAllowCliCommand && args.expression.startsWith('>');
 
@@ -1738,15 +1739,18 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                     'Evaluation of expression without frameId is not supported.'
                 );
             }
+                */
 
-            const frameRef = args.frameId
+            let frameRef = args.frameId
                 ? this.frameHandles.get(args.frameId)
                 : undefined;
 
+            /*
             if (!allowCliCommand && !frameRef) {
                 this.sendResponse(response);
                 return;
             }
+            */
 
             if (args.expression.startsWith('>') && args.context === 'repl') {
                 const regexDisable = new RegExp(
@@ -1791,21 +1795,32 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                 );
             }
 
-            const stackDepth = await mi.sendStackInfoDepth(this.gdb, {
-                maxDepth: 100,
-            });
-            const depth = parseInt(stackDepth.depth, 10);
-            let varobj = this.gdb.varManager.getVar(
+            let gdb;
+            let depth;
+            if (this.auxGdb && this.isRunning) {
+                gdb = this.auxGdb;
+                depth = 0;
+                frameRef = undefined;
+            } else {
+                gdb = this.gdb;
+                const stackDepth = await mi.sendStackInfoDepth(gdb, {
+                    maxDepth: 100,
+                });
+                depth = parseInt(stackDepth.depth, 10);
+            }
+
+            let varobj = gdb.varManager.getVar(
                 frameRef,
                 depth,
                 args.expression
             );
             if (!varobj) {
-                const varCreateResponse = await mi.sendVarCreate(this.gdb, {
+                const varCreateResponse = await mi.sendVarCreate(gdb, {
                     expression: args.expression,
                     frameRef,
+                    frame: frameRef ? 'current' : 'floating',
                 });
-                varobj = this.gdb.varManager.addVar(
+                varobj = gdb.varManager.addVar(
                     frameRef,
                     depth,
                     args.expression,
@@ -1814,7 +1829,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                     varCreateResponse
                 );
             } else {
-                const vup = await mi.sendVarUpdate(this.gdb, {
+                const vup = await mi.sendVarUpdate(gdb, {
                     name: varobj.varname,
                 });
                 const update = vup.changelist[0];
@@ -1829,17 +1844,17 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                             depth,
                             varobj.varname
                         );
-                        await mi.sendVarDelete(this.gdb, {
+                        await mi.sendVarDelete(gdb, {
                             varname: varobj.varname,
                         });
                         const varCreateResponse = await mi.sendVarCreate(
-                            this.gdb,
+                            gdb,
                             {
                                 expression: args.expression,
                                 frameRef,
                             }
                         );
-                        varobj = this.gdb.varManager.addVar(
+                        varobj = gdb.varManager.addVar(
                             frameRef,
                             depth,
                             args.expression,
@@ -1850,22 +1865,29 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                     }
                 }
             }
-            if (varobj && args.frameId != undefined) {
-                const result =
-                    args.context === 'variables' && Number(varobj.numchild)
-                        ? await this.getChildElements(varobj, args.frameId)
-                        : varobj.value;
-                response.body = {
-                    result,
-                    type: varobj.type,
-                    variablesReference:
-                        parseInt(varobj.numchild, 10) > 0
+            if (varobj) {
+                let result;
+                let variablesReference;
+                if (args.frameId != undefined) {
+                    result =
+                        args.context === 'variables' && Number(varobj.numchild)
+                            ? await this.getChildElements(varobj, args.frameId)
+                            : varobj.value;
+                    variablesReference = parseInt(varobj.numchild, 10) > 0
                             ? this.variableHandles.create({
                                   type: 'object',
                                   frameHandle: args.frameId,
                                   varobjName: varobj.varname,
                               })
-                            : 0,
+                            : 0;
+                } else {
+                    result = varobj.value;
+                    variablesReference = 0; // no children for now
+                }
+                response.body = {
+                    result,
+                    type: varobj.type,
+                    variablesReference,
                 };
             }
 
@@ -2036,7 +2058,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
     ): Promise<void> {
         // TODO: Make const, is 'let' for debugging purposes
         let gdb;
-        if (this.auxGdb) {
+        if (this.auxGdb && this.isRunning) {
             gdb = this.auxGdb;
         } else {
             gdb = this.gdb;

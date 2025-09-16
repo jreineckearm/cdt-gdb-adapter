@@ -77,6 +77,8 @@ interface SessionInfo {
 type PromiseFunction = (...args: any[]) => Promise<any>;
 
 const AuxiliaryConnectCommands = [
+    'set debug remote 1',
+    'set debug timestamp on',
     'set mem inaccessible-by-default off',
     'set stack-cache off',
     'set code-cache off',
@@ -603,6 +605,11 @@ export class GDBTargetDebugSession extends GDBDebugSession {
             }
 
             if (this.auxGdb) {
+                if (args.program !== undefined && args.program !== '') {
+                    await this.executeOrAbort(
+                        this.auxGdb.sendFileExecAndSymbols.bind(this.auxGdb)
+                    )(args.program);
+                }
                 // Skip loading files into auxiliary GDB, not necessary for
                 // just reading memory.
                 await this.executeOrAbort(
