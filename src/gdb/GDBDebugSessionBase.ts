@@ -1834,6 +1834,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                 });
                 const update = vup.changelist[0];
                 if (update) {
+                    // TODO: in scope for globals
                     if (update.in_scope === 'true') {
                         if (update.name === varobj.varname) {
                             varobj.value = update.value;
@@ -1866,24 +1867,18 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                 }
             }
             if (varobj) {
-                let result;
-                let variablesReference;
-                if (args.frameId != undefined) {
-                    result =
-                        args.context === 'variables' && Number(varobj.numchild)
-                            ? await this.getChildElements(varobj, args.frameId)
-                            : varobj.value;
-                    variablesReference = parseInt(varobj.numchild, 10) > 0
-                            ? this.variableHandles.create({
-                                  type: 'object',
-                                  frameHandle: args.frameId,
-                                  varobjName: varobj.varname,
-                              })
-                            : 0;
-                } else {
-                    result = varobj.value;
-                    variablesReference = 0; // no children for now
-                }
+                const frameHandle = args.frameId ?? -1;
+                const result =
+                    args.context === 'variables' && Number(varobj.numchild)
+                        ? await this.getChildElements(varobj, frameHandle)
+                        : varobj.value;
+                const variablesReference = parseInt(varobj.numchild, 10) > 0
+                        ? this.variableHandles.create({
+                                type: 'object',
+                                frameHandle,
+                                varobjName: varobj.varname,
+                            })
+                        : 0;
                 response.body = {
                     result,
                     type: varobj.type,
@@ -2573,7 +2568,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                         let value = varobj.value;
                         // if we have an array parent entry, we need to display the address.
                         if (arrayRegex.test(varobj.type)) {
-                            value = await this.getAddr(varobj);
+                            value = await this.getAddr(varobj, this.gdb);
                         }
                         variables.push({
                             name: varobj.expression,
@@ -2636,7 +2631,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                 let value = varobj.value;
                 // if we have an array parent entry, we need to display the address.
                 if (arrayRegex.test(varobj.type)) {
-                    value = await this.getAddr(varobj);
+                    value = await this.getAddr(varobj, this.gdb);
                 }
                 variables.push({
                     name: varobj.expression,
@@ -2786,6 +2781,11 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
     protected async handleVariableRequestRegister(
         ref: RegisterVariableReference
     ): Promise<DebugProtocol.Variable[]> {
+        if (this.auxGdb && this.isRunning) {
+            // Don't allow register view when using an auxiliary GDB
+            throw new Error('Cannot read registers while target is running');
+        }
+
         // initialize variables array and dereference the frame handle
         const variables: DebugProtocol.Variable[] = [];
         const frameRef = this.frameHandles.get(ref.frameHandle);
@@ -2833,9 +2833,9 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         return Promise.resolve(variables);
     }
 
-    protected async getAddr(varobj: VarObjType) {
+    protected async getAddr(varobj: VarObjType, gdb: IGDBBackend) {
         const addr = await mi.sendDataEvaluateExpression(
-            this.gdb,
+            gdb,
             `&(${varobj.expression})`
         );
         return addr.value ? addr.value : varobj.value;
