@@ -89,14 +89,19 @@ export class VarManager {
         varCreateResponse: MIVarCreateResponse,
         type?: string
     ): VarObjType {
+        /*
         let vars = frameRef
             ? this.variableMap.get(this.getKey(frameRef, depth))
             : undefined;
+        */
+        let vars = this.variableMap.get(this.getKey(frameRef, depth));
         if (!vars) {
             vars = [];
+            this.variableMap.set(this.getKey(frameRef, depth), vars);
+            /*
             if (frameRef) {
-                this.variableMap.set(this.getKey(frameRef, depth), vars);
             }
+            */
         }
         const varobj: VarObjType = {
             varname: varCreateResponse.name,

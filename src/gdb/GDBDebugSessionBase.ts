@@ -1834,7 +1834,6 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                 });
                 const update = vup.changelist[0];
                 if (update) {
-                    // TODO: in scope for globals
                     if (update.in_scope === 'true') {
                         if (update.name === varobj.varname) {
                             varobj.value = update.value;
