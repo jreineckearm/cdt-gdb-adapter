@@ -176,7 +176,7 @@ export class GDBTargetDebugSession extends GDBDebugSession {
         args: TargetLaunchRequestArguments | TargetAttachRequestArguments
     ) {
         await super.setupCommonLoggerAndBackends(args);
-        if (args.useAuxBackend) {
+        if (args.auxiliaryGdb) {
             await super.setupCommonLoggerAndBackends(this.createAuxBackendArgs(args), true);
         }
 
@@ -567,7 +567,7 @@ export class GDBTargetDebugSession extends GDBDebugSession {
             // Start GDB process
             this.logGDBRemote(`spawn GDB\n`);
             await this.spawn(args);
-            if (args.useAuxBackend) {
+            if (args.auxiliaryGdb) {
                 this.logGDBRemote(`spawn auxiliary GDB\n`);
                 await this.spawn(args, this.auxGdb);
             }
@@ -642,7 +642,7 @@ export class GDBTargetDebugSession extends GDBDebugSession {
                 );
             }
 
-            if (args.useAuxBackend && this.auxGdb) {
+            if (args.auxiliaryGdb && this.auxGdb) {
                 // Use connect commands to connect auxiliary GDB.
                 this.logGDBRemote('connect to auxiliary GDB');
                 const connectCommands: string[] = [

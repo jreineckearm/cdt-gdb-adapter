@@ -82,7 +82,8 @@ export class GDBBackend extends events.EventEmitter implements IGDBBackend {
         if (this.proc.stderr) {
             this.proc.stderr.on('data', (chunk) => {
                 const newChunk = chunk.toString();
-                this.emit('consoleStreamOutput', newChunk, 'stderr');
+                const output = (this.name ? `[${this.name}] ` : '') + newChunk;
+                this.emit('consoleStreamOutput', output, 'stderr');
             });
         }
         this.asyncRequestedExplicitly = !!(
