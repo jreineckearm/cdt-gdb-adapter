@@ -26,19 +26,16 @@ export class VarManager {
     }
 
     public getKey(frameRef: FrameReference | undefined, depth: number): string {
-        //return `frame${frameRef.frameId}_thread${frameRef.threadId}_depth${depth}`;
-        return `frame${frameRef?.frameId ? frameRef.frameId : ''}_thread${frameRef?.threadId ? frameRef.threadId : ''}_depth${depth}`;
+        if (!frameRef) {
+            return `global`;
+        }
+        return `frame${frameRef.frameId}_thread${frameRef.threadId}_depth${depth}`;
     }
 
     public getVars(
         frameRef: FrameReference | undefined,
         depth: number
     ): VarObjType[] | undefined {
-        /*
-        return frameRef
-            ? this.variableMap.get(this.getKey(frameRef, depth))
-            : undefined;
-        */
         return this.variableMap.get(this.getKey(frameRef, depth));
     }
 
@@ -89,19 +86,10 @@ export class VarManager {
         varCreateResponse: MIVarCreateResponse,
         type?: string
     ): VarObjType {
-        /*
-        let vars = frameRef
-            ? this.variableMap.get(this.getKey(frameRef, depth))
-            : undefined;
-        */
         let vars = this.variableMap.get(this.getKey(frameRef, depth));
         if (!vars) {
             vars = [];
             this.variableMap.set(this.getKey(frameRef, depth), vars);
-            /*
-            if (frameRef) {
-            }
-            */
         }
         const varobj: VarObjType = {
             varname: varCreateResponse.name,
