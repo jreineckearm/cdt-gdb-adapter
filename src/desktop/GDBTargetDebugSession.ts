@@ -22,6 +22,7 @@ import {
     UARTArguments,
 } from '../types/session';
 import {
+    IGDBBackend,
     IGDBBackendFactory,
     IGDBServerFactory,
     IGDBServerProcessManager,
@@ -77,13 +78,8 @@ interface SessionInfo {
 type PromiseFunction = (...args: any[]) => Promise<any>;
 
 const AuxiliaryConnectCommands = [
-    //'set debug remote 1',
-    //'set debug timestamp on',
     'set mem inaccessible-by-default off',
     'set stack-cache off',
-    'set code-cache off',
-    'mem 0 0 nocache',
-    'maint flush dcache',
     'set remote interrupt-on-connect off',
 ];
 
@@ -164,15 +160,13 @@ export class GDBTargetDebugSession extends GDBDebugSession {
         return {
             ...args,
             target: {
-                // ToDo: Check extended-remote use
-                type: 'extended-remote',
+                type: 'remote',
                 connectCommands: [
                     ...AuxiliaryConnectCommands,
-                    `target extended-remote ${args.target?.port ?? '3333'}`
+                    `target remote ${args.target?.port ?? '3333'}`
                 ],
             },
             // Clear fields only relevant to main connection
-            imageAndSymbols: undefined,
             openGdbConsole: undefined,
             initCommands: undefined,
         }
@@ -531,6 +525,35 @@ export class GDBTargetDebugSession extends GDBDebugSession {
         return returnPair;
     }
 
+    protected async configureGdbAndLoadFiles(gdb: IGDBBackend, args: TargetAttachRequestArguments): Promise<void> {
+        // Load files and configure GDB
+        if (args.program !== undefined && args.program !== '') {
+            await this.executeOrAbort(
+                gdb.sendFileExecAndSymbols.bind(gdb)
+            )(args.program);
+        }
+        await this.executeOrAbort(
+            gdb.sendEnablePrettyPrint.bind(gdb)
+        )();
+
+        if (args.imageAndSymbols) {
+            if (args.imageAndSymbols.symbolFileName) {
+                if (args.imageAndSymbols.symbolOffset) {
+                    await this.executeOrAbort(
+                        gdb.sendAddSymbolFile.bind(gdb)
+                    )(
+                        args.imageAndSymbols.symbolFileName,
+                        args.imageAndSymbols.symbolOffset
+                    );
+                } else {
+                    await this.executeOrAbort(
+                        gdb.sendFileSymbolFile.bind(gdb)
+                    )(args.imageAndSymbols.symbolFileName);
+                }
+            }
+        }
+    }
+
     protected async startGDBAndAttachToTarget(
         response: DebugProtocol.AttachResponse | DebugProtocol.LaunchResponse,
         args: TargetAttachRequestArguments
@@ -575,46 +598,10 @@ export class GDBTargetDebugSession extends GDBDebugSession {
                 }
                 await this.setExitSessionRequest(ExitSessionRequest.EXIT);
             });
-            // TODO: handle auxiliary GDB exit
 
-            // Load files and configure GDB
-            if (args.program !== undefined && args.program !== '') {
-                await this.executeOrAbort(
-                    this.gdb.sendFileExecAndSymbols.bind(this.gdb)
-                )(args.program);
-            }
-            await this.executeOrAbort(
-                this.gdb.sendEnablePrettyPrint.bind(this.gdb)
-            )();
-
-            if (args.imageAndSymbols) {
-                if (args.imageAndSymbols.symbolFileName) {
-                    if (args.imageAndSymbols.symbolOffset) {
-                        await this.executeOrAbort(
-                            this.gdb.sendAddSymbolFile.bind(this.gdb)
-                        )(
-                            args.imageAndSymbols.symbolFileName,
-                            args.imageAndSymbols.symbolOffset
-                        );
-                    } else {
-                        await this.executeOrAbort(
-                            this.gdb.sendFileSymbolFile.bind(this.gdb)
-                        )(args.imageAndSymbols.symbolFileName);
-                    }
-                }
-            }
-
+            await this.configureGdbAndLoadFiles(this.gdb, args);
             if (this.auxGdb) {
-                if (args.program !== undefined && args.program !== '') {
-                    await this.executeOrAbort(
-                        this.auxGdb.sendFileExecAndSymbols.bind(this.auxGdb)
-                    )(args.program);
-                }
-                // Skip loading files into auxiliary GDB, not necessary for
-                // just reading memory.
-                await this.executeOrAbort(
-                    this.auxGdb.sendEnablePrettyPrint.bind(this.auxGdb)
-                )();
+                await this.configureGdbAndLoadFiles(this.auxGdb, args);
             }
 
             await this.setSessionState(SessionState.GDB_READY);
@@ -660,14 +647,14 @@ export class GDBTargetDebugSession extends GDBDebugSession {
                 this.logGDBRemote('connect to auxiliary GDB');
                 const connectCommands: string[] = [
                     ...AuxiliaryConnectCommands,
-                    `target extended-remote ${targetString}`
+                    `target remote ${targetString}`
                 ];
                 await this.executeOrAbort(this.auxGdb.sendCommands.bind(this.auxGdb))(
                     connectCommands
                 );
                 this.sendEvent(
                     new OutputEvent(
-                        'connected to auxiliary using internally set connectCommands'
+                        'connected to auxiliary GDB'
                     )
                 );
             }

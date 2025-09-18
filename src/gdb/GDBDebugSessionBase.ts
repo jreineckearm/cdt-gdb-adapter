@@ -335,7 +335,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         );
 
         const manager = await this.backendFactory.createGDBManager(this, args);
-        const gdb = await this.backendFactory.createBackend(this, manager, args, auxBackend ? 'AUX-GDB' : undefined);
+        const gdb = await this.backendFactory.createBackend(this, manager, args, auxBackend ? 'AUX' : undefined);
         if (auxBackend){
             this.auxGdb = gdb;
         } else {
