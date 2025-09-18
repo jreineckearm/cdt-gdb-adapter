@@ -82,7 +82,7 @@ const AuxiliaryConnectCommands = [
     'set mem inaccessible-by-default off',
     'set stack-cache off',
     'set code-cache off',
-    'mem 0 -1 nocache',
+    'mem 0 0 nocache',
     'maint flush dcache',
     'set remote interrupt-on-connect off',
 ];
