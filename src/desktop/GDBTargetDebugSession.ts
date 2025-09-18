@@ -156,28 +156,33 @@ export class GDBTargetDebugSession extends GDBDebugSession {
         }
     }
 
-    protected createAuxBackendArgs(args: TargetLaunchRequestArguments | TargetAttachRequestArguments): TargetAttachRequestArguments {
+    protected createAuxBackendArgs(
+        args: TargetLaunchRequestArguments | TargetAttachRequestArguments
+    ): TargetAttachRequestArguments {
         return {
             ...args,
             target: {
                 type: 'remote',
                 connectCommands: [
                     ...AuxiliaryConnectCommands,
-                    `target remote ${args.target?.port ?? '3333'}`
+                    `target remote ${args.target?.port ?? '3333'}`,
                 ],
             },
             // Clear fields only relevant to main connection
             openGdbConsole: undefined,
             initCommands: undefined,
-        }
-    };
+        };
+    }
 
     protected override async setupCommonLoggerAndBackends(
         args: TargetLaunchRequestArguments | TargetAttachRequestArguments
     ) {
         await super.setupCommonLoggerAndBackends(args);
         if (args.auxiliaryGdb) {
-            await super.setupCommonLoggerAndBackends(this.createAuxBackendArgs(args), true);
+            await super.setupCommonLoggerAndBackends(
+                this.createAuxBackendArgs(args),
+                true
+            );
         }
 
         this.gdbserverProcessManager =
@@ -525,30 +530,29 @@ export class GDBTargetDebugSession extends GDBDebugSession {
         return returnPair;
     }
 
-    protected async configureGdbAndLoadFiles(gdb: IGDBBackend, args: TargetAttachRequestArguments): Promise<void> {
+    protected async configureGdbAndLoadFiles(
+        gdb: IGDBBackend,
+        args: TargetAttachRequestArguments
+    ): Promise<void> {
         // Load files and configure GDB
         if (args.program !== undefined && args.program !== '') {
-            await this.executeOrAbort(
-                gdb.sendFileExecAndSymbols.bind(gdb)
-            )(args.program);
+            await this.executeOrAbort(gdb.sendFileExecAndSymbols.bind(gdb))(
+                args.program
+            );
         }
-        await this.executeOrAbort(
-            gdb.sendEnablePrettyPrint.bind(gdb)
-        )();
+        await this.executeOrAbort(gdb.sendEnablePrettyPrint.bind(gdb))();
 
         if (args.imageAndSymbols) {
             if (args.imageAndSymbols.symbolFileName) {
                 if (args.imageAndSymbols.symbolOffset) {
-                    await this.executeOrAbort(
-                        gdb.sendAddSymbolFile.bind(gdb)
-                    )(
+                    await this.executeOrAbort(gdb.sendAddSymbolFile.bind(gdb))(
                         args.imageAndSymbols.symbolFileName,
                         args.imageAndSymbols.symbolOffset
                     );
                 } else {
-                    await this.executeOrAbort(
-                        gdb.sendFileSymbolFile.bind(gdb)
-                    )(args.imageAndSymbols.symbolFileName);
+                    await this.executeOrAbort(gdb.sendFileSymbolFile.bind(gdb))(
+                        args.imageAndSymbols.symbolFileName
+                    );
                 }
             }
         }
@@ -607,8 +611,12 @@ export class GDBTargetDebugSession extends GDBDebugSession {
             await this.setSessionState(SessionState.GDB_READY);
 
             const targetPort = target.port;
-            const targetHost = targetPort ? (target.host ?? 'localhost') : undefined;
-            const targetString = targetHost ? `${targetHost}:${targetPort}` : undefined;
+            const targetHost = targetPort
+                ? (target.host ?? 'localhost')
+                : undefined;
+            const targetString = targetHost
+                ? `${targetHost}:${targetPort}`
+                : undefined;
 
             // Connect to remote server
             if (target.connectCommands === undefined) {
@@ -647,18 +655,13 @@ export class GDBTargetDebugSession extends GDBDebugSession {
                 this.logGDBRemote('connect to auxiliary GDB');
                 const connectCommands: string[] = [
                     ...AuxiliaryConnectCommands,
-                    `target remote ${targetString}`
+                    `target remote ${targetString}`,
                 ];
-                await this.executeOrAbort(this.auxGdb.sendCommands.bind(this.auxGdb))(
-                    connectCommands
-                );
-                this.sendEvent(
-                    new OutputEvent(
-                        'connected to auxiliary GDB'
-                    )
-                );
+                await this.executeOrAbort(
+                    this.auxGdb.sendCommands.bind(this.auxGdb)
+                )(connectCommands);
+                this.sendEvent(new OutputEvent('connected to auxiliary GDB'));
             }
-
 
             await this.setSessionState(SessionState.CONNECTED);
 

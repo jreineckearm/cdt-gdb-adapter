@@ -44,7 +44,10 @@ export class GDBBackend extends events.EventEmitter implements IGDBBackend {
     protected asyncRequestedExplicitly = false;
     protected hardwareBreakpoint = false;
 
-    constructor(protected readonly processManager: IGDBProcessManager, protected readonly name?: string) {
+    constructor(
+        protected readonly processManager: IGDBProcessManager,
+        protected readonly name?: string
+    ) {
         super();
         this.parser = new MIParser(this, name);
         this.logger = new NamedLogger(name);
@@ -191,7 +194,9 @@ export class GDBBackend extends events.EventEmitter implements IGDBBackend {
             if (!this.proc) {
                 throw new Error('GDB is not running, nothing to interrupt');
             }
-            this.logger.verbose(`GDB signal: SIGINT to pid ${this.proc.getPID()}`);
+            this.logger.verbose(
+                `GDB signal: SIGINT to pid ${this.proc.getPID()}`
+            );
             this.proc.kill('SIGINT');
         }
     }

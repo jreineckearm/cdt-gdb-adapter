@@ -29,7 +29,10 @@ export class MIParser {
     protected commandQueue: CommandQueue = {};
     protected waitReady?: (value?: void | PromiseLike<void>) => void;
 
-    constructor(protected gdb: IGDBBackend, protected name?: string) {
+    constructor(
+        protected gdb: IGDBBackend,
+        protected name?: string
+    ) {
         this.logger = new NamedLogger(name);
     }
 
