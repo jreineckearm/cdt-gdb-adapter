@@ -77,8 +77,8 @@ interface SessionInfo {
 type PromiseFunction = (...args: any[]) => Promise<any>;
 
 const AuxiliaryConnectCommands = [
-    'set debug remote 1',
-    'set debug timestamp on',
+    //'set debug remote 1',
+    //'set debug timestamp on',
     'set mem inaccessible-by-default off',
     'set stack-cache off',
     'set code-cache off',
