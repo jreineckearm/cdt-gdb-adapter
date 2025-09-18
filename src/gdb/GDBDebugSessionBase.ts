@@ -2089,6 +2089,14 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         response: DebugProtocol.WriteMemoryResponse,
         args: DebugProtocol.WriteMemoryArguments
     ) {
+        // TODO: Make const, is 'let' for debugging purposes
+        let gdb;
+        if (this.auxGdb && this.isRunning) {
+            gdb = this.auxGdb;
+        } else {
+            gdb = this.gdb;
+        }
+
         try {
             const { memoryReference, data } = args;
             const typeofAddress = typeof memoryReference;
@@ -2105,7 +2113,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
             }
             const hexContent = base64ToHex(data);
             await mi.sendDataWriteMemoryBytes(
-                this.gdb,
+                gdb,
                 memoryReference,
                 hexContent
             );
