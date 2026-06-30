@@ -163,6 +163,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
     protected supportsRunInTerminalRequest = false;
     protected supportsMemoryReferences = false;
     protected supportsMemoryEvent = false;
+    protected columnsStartAt1 = false;
     public supportsGdbConsole = false;
 
     /* A reference to the logger to be used by subclasses */
@@ -441,6 +442,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
             args.supportsRunInTerminalRequest === true;
         this.supportsMemoryReferences = args.supportsMemoryReferences === true;
         this.supportsMemoryEvent = args.supportsMemoryEvent === true;
+        this.columnsStartAt1 = args.columnsStartAt1 === true;
         this.supportsGdbConsole =
             os.platform() === 'linux' && this.supportsRunInTerminalRequest;
         response.body = response.body || {};
@@ -465,6 +467,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         cap.supportsTerminateRequest = this.isRemote;
         cap.supportsDataBreakpoints = true;
         cap.supportsBreakpointLocationsRequest = true;
+        cap.supportsCompletionsRequest = true;
         cap.supportTerminateDebuggee = this.isRemote;
         cap.breakpointModes = this.getBreakpointModes();
     }
@@ -858,6 +861,63 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
 
         // The promise resolves when pushed resolveFunc gets called.
         return pausePromise;
+    }
+
+    protected async completionsRequest(
+        response: DebugProtocol.CompletionsResponse,
+        args: DebugProtocol.CompletionsArguments
+    ): Promise<void> {
+        try {
+            if (!this.canRequestProceed()) {
+                this.logger.verbose(
+                    'Debug adapter cannot process completions request, skipping it.'
+                );
+                this.sendResponse(response);
+                return;
+            }
+            const text = args.text.trimStart();
+            if (
+                !text.startsWith('>') ||
+                args.column <= args.text.indexOf('>') + 1
+            ) {
+                // All GDB commands must start with a '>' character. If expression doesn't, return no completions.
+                this.sendResponse(response);
+                return;
+            }
+            const trimmedWhiteSpaceLength = args.text.length - text.length;
+            const endOfCommandToComplete =
+                args.column - trimmedWhiteSpaceLength - 1;
+            const commandToComplete = text.slice(1, endOfCommandToComplete);
+            const completions = await mi.sendCompletions(
+                this.gdb,
+                commandToComplete
+            );
+            const startingPositionWithoutWhiteSpace =
+                args.column - commandToComplete.length;
+            response.body = {
+                targets: completions.matches.map((completion) => {
+                    return {
+                        label: completion,
+                        length: commandToComplete.length,
+                        start:
+                            trimmedWhiteSpaceLength +
+                            startingPositionWithoutWhiteSpace,
+                    };
+                }),
+            };
+            this.sendResponse(response);
+        } catch (err) {
+            if (err instanceof Error && err.message.includes('complete')) {
+                err.message = `GDB command completion failed: ${err.message}`;
+                this.sendErrorResponse(response, 1, err.message);
+            } else {
+                this.sendErrorResponse(
+                    response,
+                    1,
+                    err instanceof Error ? err.message : String(err)
+                );
+            }
+        }
     }
 
     protected async dataBreakpointInfoRequest(
