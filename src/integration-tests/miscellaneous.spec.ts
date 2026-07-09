@@ -50,7 +50,7 @@ describe('Miscellaneous GDB Commands Tests', function () {
         expect(completions.body.targets).to.deep.include(expectedCompletion);
     });
 
-    it.only('should retrieve a empty list for an invalid command', async function () {
+    it('should retrieve a empty list for an invalid command', async function () {
         const text = '>invalidCommand';
         const completions: any = await dc.send('completions', {
             text: text,
