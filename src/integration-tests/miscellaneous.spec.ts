@@ -92,7 +92,7 @@ describe('Miscellaneous GDB Commands Tests', function () {
         expect(completions.body.targets).to.deep.include(expectedCompletion);
     });
 
-    it('should not return completions for a command when cursor is before the ">" character', async function () {
+    it('should not return completions for a command when cursor is before the > character', async function () {
         const text = '   >   python-interactive';
         const completions: any = await dc.send('completions', {
             text: text,
