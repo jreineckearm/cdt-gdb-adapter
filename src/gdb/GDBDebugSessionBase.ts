@@ -906,8 +906,10 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
             this.sendResponse(response);
         } catch (err) {
             if (err instanceof Error && err.message.includes('complete')) {
-                err.message = `GDB command completion failed: ${err.message}`;
-                this.sendErrorResponse(response, 1, err.message);
+                response.body = {
+                    targets: [],
+                };
+                this.sendResponse(response);
             } else {
                 this.sendErrorResponse(
                     response,
