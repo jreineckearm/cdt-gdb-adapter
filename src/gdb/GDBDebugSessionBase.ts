@@ -163,7 +163,6 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
     protected supportsRunInTerminalRequest = false;
     protected supportsMemoryReferences = false;
     protected supportsMemoryEvent = false;
-    protected columnsStartAt1 = false;
     public supportsGdbConsole = false;
 
     /* A reference to the logger to be used by subclasses */
@@ -442,7 +441,6 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
             args.supportsRunInTerminalRequest === true;
         this.supportsMemoryReferences = args.supportsMemoryReferences === true;
         this.supportsMemoryEvent = args.supportsMemoryEvent === true;
-        this.columnsStartAt1 = args.columnsStartAt1 === true;
         this.supportsGdbConsole =
             os.platform() === 'linux' && this.supportsRunInTerminalRequest;
         response.body = response.body || {};

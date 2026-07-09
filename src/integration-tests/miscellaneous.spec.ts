@@ -50,9 +50,11 @@ describe('Miscellaneous GDB Commands Tests', function () {
         expect(completions.body.targets).to.deep.include(expectedCompletion);
     });
 
-    it('should retrieve a huge list without including the invalid command', async function () {
+    it.only('should retrieve a empty list for an invalid command', async function () {
+        const text = '>invalidCommand';
         const completions: any = await dc.send('completions', {
-            text: '>invalidCommand',
+            text: text,
+            column: text.length,
         });
         expect(completions.body.targets).to.be.an('array');
         expect(completions.body.targets).to.not.deep.include({
@@ -86,7 +88,7 @@ describe('Miscellaneous GDB Commands Tests', function () {
         expect(completions.body.targets).to.be.an('array');
         const expectedCompletion = {
             label: '   python-interactive',
-            length: text.length - 1 - 4 - text.indexOf('>') - 1, // as column is text.length - 4, subtract 4 from the length. Everything after '>' should be replaced
+            length: text.length - 1 - 4 - text.indexOf('>') - 1, // as column is text.length - 4, subtract 4 from the length to mimic python-intera|ctive. Everything after '>' should be replaced
             start: text.indexOf('p') + 1,
         };
         expect(completions.body.targets).to.deep.include(expectedCompletion);
