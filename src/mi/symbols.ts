@@ -8,6 +8,9 @@
  * SPDX-License-Identifier: EPL-2.0
  *********************************************************************/
 import { IGDBBackend } from '../types/gdb';
+import { standardEscape } from '../util/standardEscape';
+import { FrameReference } from '../types/session';
+import { appendThreadAndFrame } from './base';
 
 export interface MIDebugSymbol {
     line: string;
@@ -32,6 +35,13 @@ export interface MISymbolInfoResponse {
         debug: MISymbolInfoDebug[];
         nondebug: MINonDebugSymbol[];
     };
+}
+
+export interface MISymbolListLinesResponse {
+    lines: {
+        pc: string;
+        line: string;
+    }[];
 }
 
 export function sendSymbolInfoVars(
@@ -64,13 +74,17 @@ export function sendSymbolInfoVars(
 export function sendSymbolInfoFunctions(
     gdb: IGDBBackend,
     params?: {
+        frameRef?: FrameReference;
         name?: string;
         type?: string;
         max_result?: string;
         non_debug?: boolean;
     }
 ): Promise<MISymbolInfoResponse> {
-    let command = '-symbol-info-functions';
+    let command = appendThreadAndFrame(
+        '-symbol-info-functions',
+        params?.frameRef
+    );
     if (params) {
         if (params.name) {
             command += ` --name ${params.name}`;
@@ -86,4 +100,14 @@ export function sendSymbolInfoFunctions(
         }
     }
     return gdb.sendCommand(command);
+}
+
+export async function sendSymbolListLines(
+    gdb: IGDBBackend,
+    file: string
+): Promise<MISymbolListLinesResponse> {
+    const response: MISymbolListLinesResponse = await gdb.sendCommand(
+        `-symbol-list-lines ${standardEscape(file)}`
+    );
+    return response;
 }

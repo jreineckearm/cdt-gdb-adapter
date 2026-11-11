@@ -181,7 +181,7 @@ describe('Memory Test Suite', function () {
         memoryReference: '&array',
     };
 
-    it('can write memory', async function () {
+    it('can write memory and invalidates variables', async function () {
         const addrOfArray = parseInt(
             (
                 await dc.evaluateRequest({
@@ -190,13 +190,43 @@ describe('Memory Test Suite', function () {
                 })
             ).body.result
         );
-        await dc.writeMemoryRequest(writeArguments);
+
+        const invalidatedEventPromise = dc.waitForEvent('invalidated');
+
+        const writeMemoryResponse = await dc.writeMemoryRequest(writeArguments);
+
+        expect(writeMemoryResponse.success).to.be.true;
+
+        const invalidatedEvent = await invalidatedEventPromise;
+
+        expect(invalidatedEvent.body.areas).to.deep.equal(['variables']);
         const memory = await dc.readMemoryRequest({
             memoryReference: '&array',
             count: 10,
             offset: 0,
         });
+
         verifyReadMemoryResponse(memory, newValue, addrOfArray);
+    });
+
+    it('can write memory and handle memory notifications from gdb', async function () {
+        const addrOfArray = parseInt(
+            (
+                await dc.evaluateRequest({
+                    expression: '&array[0]',
+                    frameId: frame.id,
+                })
+            ).body.result
+        );
+        const memoryEvent = dc.waitForEvent('memory');
+        await dc.evaluateRequest({
+            expression: '>set array[0] = 0xde',
+            frameId: frame.id,
+            context: 'repl',
+        });
+        const output = await memoryEvent;
+        expect(parseInt(output.body.memoryReference)).eq(addrOfArray);
+        expect(output.body.count).eq(1);
     });
 
     it('fails when trying to write to read-only memory', async function () {

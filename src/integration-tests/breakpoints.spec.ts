@@ -338,26 +338,39 @@ describe('breakpoints', async function () {
 
         const scope = await getScopes(dc);
         const evalRequestOutput = await dc.evaluateRequest({
-            expression: '(unsigned long long)main',
+            expression: '(unsigned long long)$pc',
             context: 'repl',
             frameId: scope.frame.id,
         });
-        const mainAddr = evalRequestOutput.body.result;
-        const mainAddrHex = '0x' + BigInt(mainAddr).toString(16);
+        const instructionAddress = evalRequestOutput.body.result;
+        const instructionAddressHex =
+            '0x' + BigInt(instructionAddress).toString(16);
 
+        const stoppedEvent = dc.waitForEvent('stopped');
         const bpResp = await dc.setInstructionBreakpointsRequest({
             breakpoints: [
                 {
-                    instructionReference: mainAddr,
+                    instructionReference: instructionAddress,
                 },
             ],
         });
         expect(bpResp.body.breakpoints.length).eq(1);
-        expect(bpResp.body.breakpoints[0].instructionReference).eq(mainAddrHex);
+        expect(bpResp.body.breakpoints[0].instructionReference).eq(
+            instructionAddressHex
+        );
         expect(bpResp.body.breakpoints[0].source?.name).eq('count.c');
         expect(bpResp.body.breakpoints[0].source?.path).eq(
             path.join(testProgramsDir, 'count.c')
         );
+        await dc.setBreakpointsRequest({
+            source: {
+                name: 'count.c',
+                path: path.join(testProgramsDir, 'count.c'),
+            },
+            breakpoints: [],
+        });
+        await dc.continueRequest({ threadId: scope.thread.id });
+        expect((await stoppedEvent).body.reason).eq('instruction breakpoint');
     });
 
     it('set an instruction breakpoint with non-numeric sends response', async function () {
@@ -444,6 +457,7 @@ describe('breakpoints', async function () {
             // win32 host can only pause remote + mi-async targets
             this.skip();
         }
+        const firstStoppedEvent = dc.waitForEvent('stopped');
         let response = await dc.setBreakpointsRequest({
             source: {
                 name: 'count.c',
@@ -458,7 +472,7 @@ describe('breakpoints', async function () {
         });
         expect(response.body.breakpoints.length).to.eq(1);
         await dc.configurationDoneRequest();
-        await dc.waitForEvent('stopped');
+        await firstStoppedEvent;
         const scope = await getScopes(dc);
         await dc.continueRequest({ threadId: scope.thread.id });
 
@@ -884,5 +898,28 @@ describe('breakpoints', async function () {
             breakpoints: [],
         });
         expect(response.body.breakpoints.length).eq(0);
+    });
+
+    it('uses breakpointLocations to verify valid breakpoint locations', async () => {
+        const response = await dc.customRequest('breakpointLocations', {
+            source: {
+                name: 'count.c',
+                path: path.join(testProgramsDir, 'count.c'),
+            },
+            line: 1,
+            endLine: 10,
+        });
+        expect(response.body.breakpoints.length).to.be.greaterThan(0);
+        expect(response.body.breakpoints[0]).to.have.property('line');
+        // Line 6 should be a valid breakpoint location, as it has code
+        const line6 = response.body.breakpoints.find(
+            (bp: any) => bp.line === 6
+        );
+        expect(line6).not.eq(undefined);
+        // Line 5 should not be a valid breakpoint location, as it has no code
+        const line5 = response.body.breakpoints.find(
+            (bp: any) => bp.line === 5
+        );
+        expect(line5).eq(undefined);
     });
 });

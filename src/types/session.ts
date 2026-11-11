@@ -7,8 +7,12 @@
  *
  * SPDX-License-Identifier: EPL-2.0
  *********************************************************************/
-import { Response } from '@vscode/debugadapter';
 import { DebugProtocol } from '@vscode/debugprotocol';
+
+export const enum RequestArgRun {
+    ALL = 'all',
+    PRESERVE = 'preserve',
+}
 
 export interface RequestArguments extends DebugProtocol.LaunchRequestArguments {
     gdb?: string;
@@ -30,6 +34,7 @@ export interface RequestArguments extends DebugProtocol.LaunchRequestArguments {
     customResetCommands?: string[];
     steppingResponseTimeout?: number;
     updateThreadInfo?: 'missing' | 'when-requested' | 'never';
+    run?: RequestArgRun;
 }
 
 export interface LaunchRequestArguments extends RequestArguments {
@@ -43,6 +48,7 @@ export interface AttachRequestArguments extends RequestArguments {
 export interface FrameReference {
     threadId: number;
     frameId: number;
+    pc?: string;
 }
 
 export interface FrameVariableReference {
@@ -66,25 +72,6 @@ export type VariableReference =
     | FrameVariableReference
     | ObjectVariableReference
     | RegisterVariableReference;
-
-export interface MemoryRequestArguments {
-    address: string;
-    length: number;
-    offset?: number;
-}
-
-/**
- * Response for our custom 'cdt-gdb-adapter/Memory' request.
- */
-export interface MemoryContents {
-    /* Hex-encoded string of bytes.  */
-    data: string;
-    address: string;
-}
-
-export interface MemoryResponse extends Response {
-    body: MemoryContents;
-}
 
 export interface CDTDisassembleArguments
     extends DebugProtocol.DisassembleArguments {
@@ -176,8 +163,7 @@ export interface TargetAttachRequestArguments extends RequestArguments {
     auxiliaryGdb?: boolean;
 }
 
-export interface TargetLaunchRequestArguments
-    extends TargetAttachRequestArguments {
+export interface TargetLaunchRequestArguments extends TargetAttachRequestArguments {
     target?: TargetLaunchArguments;
     imageAndSymbols?: ImageAndSymbolArguments;
     // Optional commands to issue between loading image and resuming target

@@ -18,6 +18,7 @@ import {
     Logger,
     logger,
     LoggingDebugSession,
+    MemoryEvent,
     OutputEvent,
     Scope,
     Source,
@@ -26,6 +27,7 @@ import {
     Event,
 } from '@vscode/debugadapter';
 import { DebugProtocol } from '@vscode/debugprotocol';
+import { Mutex } from 'async-mutex';
 import { ContinuedEvent } from '../events/continuedEvent';
 import { StoppedEvent } from '../events/stoppedEvent';
 import { VarObjType } from '../varManager';
@@ -34,12 +36,11 @@ import {
     VariableReference,
     LaunchRequestArguments,
     AttachRequestArguments,
-    MemoryResponse,
     FrameVariableReference,
     RegisterVariableReference,
     ObjectVariableReference,
-    MemoryRequestArguments,
     CDTDisassembleArguments,
+    RequestArgRun,
 } from '../types/session';
 import { IGDBBackend, IGDBBackendFactory } from '../types/gdb';
 import { getInstructions } from '../util/disassembly';
@@ -50,6 +51,7 @@ import { DEFAULT_STEPPING_RESPONSE_TIMEOUT } from '../constants/session';
 import { ThreadWithStatus } from './common';
 import { RESUME_COMMANDS, SET_ALL_CHARSET_REGEXPS } from '../constants/gdb';
 import { GDBThreadRunning } from './errors';
+import { MIGDBDataEvaluateExpressionResponse } from '../mi';
 
 /**
  * Keeps track of where in the configuration phase (between initialized event
@@ -158,10 +160,15 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
      * (GDBTargetDebugSession) and never for type="gdb" (GDBDebugSession).
      */
     protected isRemote = false;
-    // isRunning === true means there are no threads stopped.
+    // isRunning === true means there are threads and none are stopped.
+    // When uncertain because we have not received the status of the newest
+    // threads yet, this is the last certain value.
     protected isRunning = false;
 
+    protected columnStartAt1 = true;
     protected supportsRunInTerminalRequest = false;
+    protected supportsMemoryReferences = false;
+    protected supportsMemoryEvent = false;
     public supportsGdbConsole = false;
 
     /* A reference to the logger to be used by subclasses */
@@ -177,6 +184,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
 
     protected updateThreadInfo: 'missing' | 'when-requested' | 'never' =
         'missing';
+    protected runAfterConfiguration: RequestArgRun = RequestArgRun.ALL;
 
     /**
      * State variables for pauseIfNeeded/continueIfNeeded logic, mostly used for
@@ -197,6 +205,12 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
     // first of them pauses, and the last to complete resumes
     protected pauseCount = 0;
 
+    // Serializes the bodies of the breakpoint request handlers so their
+    // read-modify-write of GDB's global breakpoint list cannot interleave.
+    // pauseIfNeeded/continueIfNeeded only coalesces the target pause, it does
+    // not prevent concurrent handlers from acting on stale snapshots.
+    protected breakpointMutex = new Mutex();
+
     // Pending requests to pause a thread silently (without sending stopped event).
     // At the moment only used with pauseIfRunning().
     protected silentPauseRequests: PendingPauseRequest[] = [];
@@ -206,7 +220,9 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
     // keeps track of where in the configuration phase (between initialize event
     // and configurationDone response) we are
     protected configuringState: ConfiguringState = ConfiguringState.INITIAL;
-    protected isInitialized = false;
+    protected isInitialized = false; // unused here but kept for compatibility
+    protected deferredStopEvents: any[] = [];
+    protected firstContinueIsRun = false;
 
     /**
      *  customResetCommands from launch.json
@@ -289,11 +305,9 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         response: DebugProtocol.Response,
         args: any
     ): void {
-        if (command === 'cdt-gdb-adapter/Memory') {
-            this.memoryRequest(response as MemoryResponse, args);
-            // This custom request exists to allow tests in this repository to run arbitrary commands
-            // Use at your own risk!
-        } else if (command === 'cdt-gdb-tests/executeCommand') {
+        // This custom request exists to allow tests in this repository to run arbitrary commands
+        // Use at your own risk!
+        if (command === 'cdt-gdb-tests/executeCommand') {
             const consoleOutput: string[] = [];
             const consoleOutputListener = (line: string) =>
                 consoleOutput.push(line);
@@ -349,6 +363,16 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                     "Valid values are: 'missing', 'when-requested', or 'never'."
             );
         }
+        if (
+            args.run !== undefined &&
+            args.run !== RequestArgRun.ALL &&
+            args.run !== RequestArgRun.PRESERVE
+        ) {
+            throw new Error(
+                `Invalid value for 'run': '${args.run}'. ` +
+                    "Valid values are: 'all', 'preserve'."
+            );
+        }
     }
 
     /**
@@ -362,6 +386,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         this.steppingResponseTimeout =
             args.steppingResponseTimeout ?? DEFAULT_STEPPING_RESPONSE_TIMEOUT;
         this.updateThreadInfo = args.updateThreadInfo ?? 'missing';
+        this.runAfterConfiguration = args.run ?? RequestArgRun.ALL;
     }
 
     /**
@@ -423,27 +448,36 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
     ): void {
         this.supportsRunInTerminalRequest =
             args.supportsRunInTerminalRequest === true;
+        this.supportsMemoryReferences = args.supportsMemoryReferences === true;
+        this.supportsMemoryEvent = args.supportsMemoryEvent === true;
+        this.columnStartAt1 = args.columnsStartAt1 === true;
         this.supportsGdbConsole =
             os.platform() === 'linux' && this.supportsRunInTerminalRequest;
         response.body = response.body || {};
-        response.body.supportsConfigurationDoneRequest = true;
-        response.body.supportsEvaluateForHovers = true;
-        response.body.supportsSetVariable = true;
-        response.body.supportsConditionalBreakpoints = true;
-        response.body.supportsHitConditionalBreakpoints = true;
-        response.body.supportsLogPoints = true;
-        response.body.supportsFunctionBreakpoints = true;
-        // response.body.supportsSetExpression = true;
-        response.body.supportsDisassembleRequest = true;
-        response.body.supportsReadMemoryRequest = true;
-        response.body.supportsWriteMemoryRequest = true;
-        response.body.supportsSteppingGranularity = true;
-        response.body.supportsInstructionBreakpoints = true;
-        response.body.supportsTerminateRequest = this.isRemote;
-        response.body.supportsDataBreakpoints = true;
-        response.body.supportTerminateDebuggee = this.isRemote;
-        response.body.breakpointModes = this.getBreakpointModes();
+        this.getCapabilities(response.body);
         this.sendResponse(response);
+    }
+
+    protected getCapabilities(cap: DebugProtocol.Capabilities): void {
+        cap.supportsConfigurationDoneRequest = true;
+        cap.supportsEvaluateForHovers = true;
+        cap.supportsSetVariable = true;
+        cap.supportsConditionalBreakpoints = true;
+        cap.supportsHitConditionalBreakpoints = true;
+        cap.supportsLogPoints = true;
+        cap.supportsFunctionBreakpoints = true;
+        cap.supportsSetExpression = true;
+        cap.supportsDisassembleRequest = true;
+        cap.supportsReadMemoryRequest = true;
+        cap.supportsWriteMemoryRequest = true;
+        cap.supportsSteppingGranularity = true;
+        cap.supportsInstructionBreakpoints = true;
+        cap.supportsTerminateRequest = this.isRemote;
+        cap.supportsDataBreakpoints = true;
+        cap.supportsBreakpointLocationsRequest = true;
+        cap.supportsCompletionsRequest = true;
+        cap.supportTerminateDebuggee = this.isRemote;
+        cap.breakpointModes = this.getBreakpointModes();
     }
 
     private switchOutputToError(input: string, category: string): StreamOutput {
@@ -634,15 +668,6 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         return gdb?.spawn(args);
     }
 
-    protected updateIsRunningFromThreads(): void {
-        this.isRunning = this.threads.length ? true : false;
-        for (const thread of this.threads) {
-            if (!thread.running) {
-                this.isRunning = false;
-            }
-        }
-    }
-
     protected anyThreadRunning(): boolean {
         return this.threads.some((thread) => thread.running);
     }
@@ -655,7 +680,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
             return this.anyThreadRunning();
         }
         const thread = this.threads.find((entry) => entry.id === threadId);
-        return thread ? thread.running : this.isRunning;
+        return thread?.running ?? this.isRunning;
     }
 
     protected resolveStoppedStateRequests(): void {
@@ -684,10 +709,9 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                 resolveFunc: resolve,
             };
             request.timer = setTimeout(() => {
-                this.stoppedStateRequests =
-                    this.stoppedStateRequests.filter(
-                        (pending) => pending !== request
-                    );
+                this.stoppedStateRequests = this.stoppedStateRequests.filter(
+                    (pending) => pending !== request
+                );
                 resolve(!this.isThreadRunning(threadId));
             }, STOPPED_REQUEST_WAIT_TIMEOUT);
             this.stoppedStateRequests.push(request);
@@ -700,10 +724,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         if (await this.waitForStoppedState(threadId)) {
             return;
         }
-        throw new GDBThreadRunning(
-            new Error('Selected thread is running'),
-            ''
-        );
+        throw new GDBThreadRunning(new Error('Selected thread is running'), '');
     }
 
     protected getFrameReference(
@@ -733,7 +754,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         } else {
             this.threads.forEach((thread) => (thread.running = true));
         }
-        this.updateIsRunningFromThreads();
+        this.updateIsRunning();
     }
 
     protected markThreadsStopped(threadId?: number): void {
@@ -744,7 +765,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         } else {
             this.threads.forEach((thread) => (thread.running = false));
         }
-        this.updateIsRunningFromThreads();
+        this.updateIsRunning();
         this.resolveStoppedStateRequests();
     }
 
@@ -902,21 +923,39 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         this.waitPaused = undefined;
     }
 
+    protected setConfiguringStateDone(): void {
+        this.configuringState = ConfiguringState.DONE;
+        for (const resultData of this.deferredStopEvents) {
+            this.handleGDBStopped(resultData);
+        }
+        this.deferredStopEvents.splice(0);
+    }
+
     protected async continueIfNeeded(): Promise<void> {
         if (this.pauseCount > 0) {
             this.pauseCount--;
             if (this.pauseCount === 0) {
                 if (this.configuringState === ConfiguringState.FINISHING) {
-                    this.configuringState = ConfiguringState.DONE;
-                    if (this.isAttach) {
-                        await this.sendResumeCommand(() =>
-                            mi.sendExecContinue(this.gdb)
-                        );
-                    } else {
-                        await this.sendResumeCommand(() =>
-                            mi.sendExecRun(this.gdb)
-                        );
+                    if (
+                        this.runAfterConfiguration == RequestArgRun.ALL ||
+                        this.waitPausedNeeded
+                    ) {
+                        if (this.isAttach) {
+                            await this.sendResumeCommand(() =>
+                                mi.sendExecContinue(this.gdb)
+                            );
+                        } else {
+                            await this.sendResumeCommand(() =>
+                                mi.sendExecRun(this.gdb)
+                            );
+                        }
+                    } else if (!this.isAttach) {
+                        // We would have sent a 'run' rather than a 'continue',
+                        // but since the user didn't want us to, let them do it
+                        // manually using a continue request.
+                        this.firstContinueIsRun = true;
                     }
+                    this.setConfiguringStateDone();
                 } else if (this.waitPausedNeeded) {
                     if (this.gdb.isNonStopMode()) {
                         await this.sendResumeCommand(
@@ -979,6 +1018,68 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         return pausePromise;
     }
 
+    protected async completionsRequest(
+        response: DebugProtocol.CompletionsResponse,
+        args: DebugProtocol.CompletionsArguments
+    ): Promise<void> {
+        try {
+            if (!this.canRequestProceed()) {
+                this.logger.verbose(
+                    'Debug adapter cannot process completions request, skipping it.'
+                );
+                this.sendResponse(response);
+                return;
+            }
+            const text = args.text.trimStart();
+            const beginningOfCommand = args.text.indexOf('>') + 1;
+            const effectiveColumn = this.columnStartAt1
+                ? args.column - 1
+                : args.column;
+            if (!text.startsWith('>') || effectiveColumn < beginningOfCommand) {
+                // All GDB commands must start with a '>' character. If expression doesn't, return no completions.
+                this.sendResponse(response);
+                return;
+            }
+            const trimmedWhiteSpaceLength = args.text.length - text.length;
+            // Slicing from > to end of command to complete
+            const commandToComplete = args.text.slice(
+                trimmedWhiteSpaceLength + 1,
+                effectiveColumn
+            );
+            const frameRef = this.resolveFrameRef(args.frameId);
+            const completions = await mi.sendCompletions(
+                this.gdb,
+                commandToComplete,
+                { frameRef }
+            );
+            response.body = {
+                targets: completions.matches.map((completion) => {
+                    return {
+                        label: completion,
+                        length: commandToComplete.length,
+                        start:
+                            trimmedWhiteSpaceLength +
+                            (this.columnStartAt1 ? 2 : 1), // +1 for the '>' character if 0-based, +2 if 1-based
+                    };
+                }),
+            };
+            this.sendResponse(response);
+        } catch (err) {
+            if (err instanceof Error && err.message.includes('complete')) {
+                response.body = {
+                    targets: [],
+                };
+                this.sendResponse(response);
+            } else {
+                this.sendErrorResponse(
+                    response,
+                    1,
+                    err instanceof Error ? err.message : String(err)
+                );
+            }
+        }
+    }
+
     protected async dataBreakpointInfoRequest(
         response: DebugProtocol.DataBreakpointInfoResponse,
         args: DebugProtocol.DataBreakpointInfoArguments
@@ -1021,8 +1122,10 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         } else {
             // Try to evaluate the address of the expression to see if it's a valid symbol
             try {
+                const frameRef = this.resolveFrameRef(args.frameId);
                 const isFunction = await mi.sendSymbolInfoFunctions(this.gdb, {
                     name: `^${varExpression}$`,
+                    frameRef,
                 });
                 if (isFunction.symbols.debug) {
                     throw new Error(
@@ -1031,11 +1134,13 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                 }
                 const address = await mi.sendDataEvaluateExpression(
                     this.gdb,
-                    `&${varExpression}`
+                    `&${varExpression}`,
+                    frameRef
                 );
                 const size = await mi.sendDataEvaluateExpression(
                     this.gdb,
-                    `sizeof(${varExpression})`
+                    `sizeof(${varExpression})`,
+                    frameRef
                 );
                 if (address.value && size.value) {
                     response.body = {
@@ -1080,12 +1185,21 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         // Filter out all watchpoints
         const existingWatchpointsList =
             fullBreakpointsList.BreakpointTable.body.filter((bp) =>
-                bp['type'].includes('watchpoint')
+                bp['type']?.includes('watchpoint')
             );
         return existingWatchpointsList;
     }
 
     protected async setDataBreakpointsRequest(
+        response: DebugProtocol.SetDataBreakpointsResponse,
+        args: DebugProtocol.SetDataBreakpointsArguments
+    ): Promise<void> {
+        await this.breakpointMutex.runExclusive(() =>
+            this.doSetDataBreakpointsRequest(response, args)
+        );
+    }
+
+    protected async doSetDataBreakpointsRequest(
         response: DebugProtocol.SetDataBreakpointsResponse,
         args: DebugProtocol.SetDataBreakpointsArguments
     ): Promise<void> {
@@ -1198,18 +1312,17 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         response: DebugProtocol.SetInstructionBreakpointsResponse,
         args: DebugProtocol.SetInstructionBreakpointsArguments
     ): Promise<void> {
-        try {
-            return await this.doSetInstructionBreakpointsRequest(
-                response,
-                args
-            );
-        } catch (err) {
-            this.sendErrorResponse(
-                response,
-                1,
-                err instanceof Error ? err.message : String(err)
-            );
-        }
+        await this.breakpointMutex.runExclusive(async () => {
+            try {
+                await this.doSetInstructionBreakpointsRequest(response, args);
+            } catch (err) {
+                this.sendErrorResponse(
+                    response,
+                    1,
+                    err instanceof Error ? err.message : String(err)
+                );
+            }
+        });
     }
 
     protected async doSetInstructionBreakpointsRequest(
@@ -1338,6 +1451,15 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         response: DebugProtocol.SetBreakpointsResponse,
         args: DebugProtocol.SetBreakpointsArguments
     ): Promise<void> {
+        await this.breakpointMutex.runExclusive(() =>
+            this.doSetBreakPointsRequest(response, args)
+        );
+    }
+
+    protected async doSetBreakPointsRequest(
+        response: DebugProtocol.SetBreakpointsResponse,
+        args: DebugProtocol.SetBreakpointsArguments
+    ): Promise<void> {
         // If this is the first time sending this breakpoint and there are no breakpoints to set,
         // do not change state of the target by avoiding an unnecessary pause
         if (!this.isBreakpointSent) {
@@ -1401,12 +1523,10 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                     ? gdbbp['original-location'].toLowerCase()
                     : gdbbp['original-location'];
 
-                if (
-                    !(
-                        origLocCmp.includes(prefixCmp) ||
-                        origLocCmp.includes(fileCmp)
-                    )
-                ) {
+                if (!(
+                    origLocCmp.includes(prefixCmp) ||
+                    origLocCmp.includes(fileCmp)
+                )) {
                     return false;
                 }
 
@@ -1535,8 +1655,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                 try {
                     const line = vsbp.line.toString();
                     const breakpointMode = vsbp.mode as
-                        | mi.MIBreakpointMode
-                        | undefined;
+                        mi.MIBreakpointMode | undefined;
                     const options = await this.gdb.getBreakpointOptions(
                         {
                             locationType: 'source',
@@ -1586,6 +1705,15 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
     }
 
     protected async setFunctionBreakPointsRequest(
+        response: DebugProtocol.SetFunctionBreakpointsResponse,
+        args: DebugProtocol.SetFunctionBreakpointsArguments
+    ) {
+        await this.breakpointMutex.runExclusive(() =>
+            this.doSetFunctionBreakPointsRequest(response, args)
+        );
+    }
+
+    protected async doSetFunctionBreakPointsRequest(
         response: DebugProtocol.SetFunctionBreakpointsResponse,
         args: DebugProtocol.SetFunctionBreakpointsArguments
     ) {
@@ -1752,6 +1880,67 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         return { resolved, deletes };
     }
 
+    protected async breakpointLocationsRequest(
+        response: DebugProtocol.BreakpointLocationsResponse,
+        args: DebugProtocol.BreakpointLocationsArguments
+    ): Promise<void> {
+        // Check if debug adapter is in a state to proceed with the request.
+        if (!this.canRequestProceed()) {
+            this.logger.verbose(
+                'Debug adapter cannot process breakpoint locations request, skipping it.'
+            );
+            response.body = {
+                breakpoints: [],
+            };
+            this.sendResponse(response);
+            return;
+        }
+        try {
+            const file = args.source.path;
+            if (!file) {
+                throw new Error('Source path is missing');
+            }
+            const availableLines = await mi.sendSymbolListLines(this.gdb, file);
+            // Compare available lines with requested lines range and return the ones that are available in GDB
+            const startLine = args.line;
+            const endLine = args.endLine || args.line;
+            const breakpoints = availableLines.lines
+                .map((line) => ({
+                    line: parseInt(line.line, 10),
+                }))
+                .filter(
+                    (line) => line.line >= startLine && line.line <= endLine
+                );
+            response.body = {
+                breakpoints,
+            };
+            this.sendResponse(response);
+        } catch (err) {
+            if (
+                err instanceof Error &&
+                err.message.includes(
+                    '-symbol-list-lines: Unknown source file name.'
+                )
+            ) {
+                // fail silently
+                this.logger.verbose(
+                    `GDB cannot provide breakpoint locations for file ${args.source.path}: ${err.message}`
+                );
+                response.body = {
+                    breakpoints: [],
+                };
+                this.sendResponse(response);
+                return;
+            } else {
+                this.sendErrorResponse(
+                    response,
+                    1,
+                    err instanceof Error ? err.message : String(err)
+                );
+            }
+        }
+    }
+
     protected async configurationDoneRequest(
         response: DebugProtocol.ConfigurationDoneResponse,
         _args: DebugProtocol.ConfigurationDoneArguments
@@ -1773,7 +1962,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                 this.configuringState = ConfiguringState.FINISHING;
                 await this.continueIfNeeded();
             } else {
-                this.configuringState = ConfiguringState.DONE;
+                this.setConfiguringStateDone();
             }
             this.sendResponse(response);
         } catch (err) {
@@ -1792,7 +1981,14 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
             name += ` (${thread.details})`;
         }
 
-        const running = thread.state === 'running';
+        // 'thread-created' notifications don't include a thread state, it comes
+        // later via a 'stopped' or 'running' notification.
+        const running =
+            thread.state === 'running'
+                ? true
+                : thread.state === 'stopped'
+                  ? false
+                  : undefined;
 
         return new ThreadWithStatus(parseInt(thread.id, 10), name, running);
     }
@@ -1845,7 +2041,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                     .map((thread) => this.convertThread(thread))
                     .sort((a, b) => a.id - b.id);
                 this.missingThreadNames = false;
-                this.updateIsRunningFromThreads();
+                this.updateIsRunning();
                 this.resolveStoppedStateRequests();
             }
 
@@ -1917,6 +2113,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                 const frameHandle = this.frameHandles.create({
                     threadId: args.threadId,
                     frameId: parseInt(frame.level, 10),
+                    pc: frame.addr,
                 });
                 const name = frame.func || frame.fullname || '';
                 const sf = new StackFrame(
@@ -2111,10 +2308,15 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         }
 
         try {
-            await this.sendResumeCommand(
-                () => mi.sendExecContinue(this.gdb, args.threadId),
-                args.threadId
-            );
+            if (this.firstContinueIsRun) {
+                this.firstContinueIsRun = false;
+                await this.sendResumeCommand(() => mi.sendExecRun(this.gdb));
+            } else {
+                await this.sendResumeCommand(
+                    () => mi.sendExecContinue(this.gdb, args.threadId),
+                    args.threadId
+                );
+            }
             let isAllThreadsContinued;
             if (this.gdb.isNonStopMode()) {
                 isAllThreadsContinued = args.threadId ? false : true;
@@ -2150,7 +2352,8 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         }
 
         try {
-            this.gdb.pause(args.threadId);
+            // no need to await the result, but do catch any exceptions/rejections
+            await this.gdb.pause(args.threadId);
             this.sendResponse(response);
         } catch (err) {
             this.sendErrorResponse(
@@ -2275,7 +2478,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                 this.sendResponse(response);
                 return;
             }
-            const frameRef = this.frameHandles.get(ref.frameHandle);
+            const frameRef = this.resolveFrameRef(ref.frameHandle);
             if (!frameRef) {
                 this.sendResponse(response);
                 return;
@@ -2338,6 +2541,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                     const children = await mi.sendVarListChildren(this.gdb, {
                         name: parentVarname,
                         printValues: mi.MIVarPrintValues.all,
+                        frameRef,
                     });
                     for (const child of children.children) {
                         if (this.isChildOfClass(child)) {
@@ -2391,33 +2595,74 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
             return;
         }
         this.sendResponse(response);
+        this.sendEvent(new InvalidatedEvent(['variables']));
     }
 
-    // protected async setExpressionRequest(response: DebugProtocol.SetExpressionResponse,
-    //                                      args: DebugProtocol.SetExpressionArguments): Promise<void> {
-    //     logger.error('got setExpressionRequest');
-    //     this.sendResponse(response);
-    // }
+    protected async setExpressionRequest(
+        response: DebugProtocol.SetExpressionResponse,
+        args: DebugProtocol.SetExpressionArguments
+    ): Promise<void> {
+        if (!this.canRequestProceed()) {
+            this.logger.verbose(
+                'Debug adapter cannot process set variable request, skipping it.'
+            );
+            this.sendResponse(response);
+            return;
+        }
+        try {
+            const initialFrameRef = this.resolveFrameRef(args.frameId);
+            const [gdb, frameRef, depth] =
+                await this.getFrameContext(initialFrameRef);
+            const varObj = gdb.varManager.getVar(
+                frameRef,
+                depth,
+                args.expression
+            );
+            // Not handling requests for expressions that do not have a dedicated GDB variable object for now.
+            if (!varObj) {
+                throw new Error(`Variable ${args.expression} not found`);
+            } else {
+                const assign = await mi.sendVarAssign(gdb, {
+                    varname: varObj.varname,
+                    expression: args.value,
+                    frameRef,
+                });
+                response.body = {
+                    value: assign.value,
+                };
+            }
+            this.sendResponse(response);
+            this.sendEvent(new InvalidatedEvent(['variables']));
+        } catch (err) {
+            this.sendErrorResponse(
+                response,
+                1,
+                err instanceof Error ? err.message : String(err)
+            );
+        }
+    }
 
     /**
      * Send command to backend.
      * @param expression Command to be executed
+     * @returns Promise for: - MI response as JS object if MI command, - `undefined` if CLI command
      */
     protected async sendCommandToGdb(
         gdb: IGDBBackend,
         expression: string,
         frameRef: FrameReference | undefined
-    ): Promise<void> {
+    ): Promise<any> {
         const sendCommand = async () => {
             if (expression.startsWith('-')) {
                 // GDB/MI command
-                await gdb.sendCommand(expression);
+                return await gdb.sendCommand(expression);
             } else {
                 // GDB CLI command
                 await mi.sendInterpreterExecConsole(gdb, {
                     frameRef,
                     command: expression,
                 });
+                return undefined;
             }
         };
 
@@ -2425,15 +2670,14 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
             const threadId =
                 this.getThreadIdFromCommand(expression) ??
                 (this.gdb.isNonStopMode() ? frameRef?.threadId : undefined);
-            await this.sendResumeCommand(sendCommand, threadId);
-            return;
+            return await this.sendResumeCommand(sendCommand, threadId);
         }
 
         if (gdb === this.gdb && frameRef) {
             await this.ensureThreadStoppedForRequest(frameRef.threadId);
         }
 
-        await sendCommand();
+        return await sendCommand();
     }
 
     /**
@@ -2477,9 +2721,13 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         frameRef: FrameReference | undefined
     ): Promise<void> {
         const trimmedExpression = expression.trim();
-        await this.sendCommandToGdb(this.gdb, trimmedExpression, frameRef);
+        const result = await this.sendCommandToGdb(
+            this.gdb,
+            trimmedExpression,
+            frameRef
+        );
         response.body = {
-            result: '\r',
+            result: result ? JSON.stringify(result) : '\r',
             variablesReference: 0,
         };
         await this.sendCommandToOtherGdbs(
@@ -2505,6 +2753,21 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         return isInstructionBp;
     }
 
+    /**
+     * Map a DAP `frameId` handle to a GDB FrameReference.
+     *
+     * `undefined` and negative DAP ids (VS Code uses -1 for watch/repl with
+     * no selected frame) are converted to `undefined` on purpose so
+     * VarManager uses the `global` cache key and MI commands omit
+     * `--thread`/`--frame`.
+     */
+    protected resolveFrameRef(frameId?: number): FrameReference | undefined {
+        if (frameId === undefined || frameId < 0) {
+            return undefined;
+        }
+        return this.frameHandles.get(frameId);
+    }
+
     private async getFrameContext(
         frameRef?: FrameReference
     ): Promise<
@@ -2518,6 +2781,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         if (this.auxGdb && this.isRunning) {
             // Target is running and we have an auxiliary GDB connection,
             // hence we don't have a stable stack to ask the depth for.
+            // frameRef is undefined on purpose: aux GDB has no selected inferior/thread.
             return [this.auxGdb, undefined, 0, true];
         }
         // Read stack depth from main GDB connection, in reality
@@ -2529,6 +2793,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
             threadId: frameRef?.threadId,
         });
         const depth = parseInt(stackDepth.depth, 10);
+        await this.gdb.varManager.prepareFrame(frameRef, depth);
         return [this.gdb, frameRef, depth, false];
     }
 
@@ -2536,7 +2801,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         response: DebugProtocol.EvaluateResponse,
         args: DebugProtocol.EvaluateArguments
     ): Promise<void> {
-        return this.doEvaluateRequest(response, args, false);
+        return this.doEvaluateRequest(response, args, true);
     }
 
     private extractExpressionFormat(
@@ -2580,7 +2845,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
     protected async doEvaluateRequest(
         response: DebugProtocol.EvaluateResponse,
         args: DebugProtocol.EvaluateArguments,
-        alwaysAllowCliCommand: boolean // if true, allows evaluation of expression without a frameId
+        alwaysAllowCliCommand: boolean // if true, allows evaluation of expression without a frameId (kept for compatibility)
     ): Promise<void> {
         response.body = {
             result: 'Error: could not evaluate expression',
@@ -2615,9 +2880,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                 );
             }
 
-            const initialFrameRef = args.frameId
-                ? this.frameHandles.get(args.frameId)
-                : undefined;
+            const initialFrameRef = this.resolveFrameRef(args.frameId);
 
             if (!allowUndefinedFrame && !initialFrameRef) {
                 this.sendResponse(response);
@@ -2714,6 +2977,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                 );
             } else {
                 const vup = await mi.sendVarUpdate(gdb, {
+                    frameRef,
                     name: varobj.varname,
                 });
                 const update = vup.changelist[0];
@@ -2754,6 +3018,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                             await mi.sendVarEvaluateExpression(gdb, {
                                 varname: varobj.varname,
                                 format: expressionDisplayFormat,
+                                frameRef,
                             })
                         ).value
                       : varobj.value;
@@ -2765,10 +3030,35 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                               varobjName: varobj.varname,
                           })
                         : 0;
+                let memoryReferenceResult:
+                    MIGDBDataEvaluateExpressionResponse | undefined;
+                let hasMemoryReference = false;
+                if (this.supportsMemoryReferences) {
+                    try {
+                        memoryReferenceResult =
+                            await mi.sendDataEvaluateExpression(
+                                gdb,
+                                `&(${varobj.expression})`,
+                                frameRef
+                            );
+                        // Depending on the GDBServer being used, sometimes the result of evaluating an address of a symbol returns "<address> <symbol name>"
+                        if (memoryReferenceResult.value?.includes(' ')) {
+                            memoryReferenceResult.value =
+                                memoryReferenceResult.value.split(' ')[0];
+                        }
+                        hasMemoryReference = true;
+                    } catch {
+                        hasMemoryReference = false;
+                    }
+                }
                 response.body = {
                     result,
                     type: varobj.type,
                     variablesReference,
+                    memoryReference:
+                        hasMemoryReference && memoryReferenceResult
+                            ? memoryReferenceResult.value
+                            : undefined,
                 };
             }
 
@@ -2787,7 +3077,15 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                     this.sendResponse(response);
                     return;
                 }
-                this.sendErrorResponse(response, 1, errorMessage);
+                if (args.context === 'repl') {
+                    this.sendErrorResponse(response, {
+                        id: 1, // Id = 1 has always been the case for evaluateRequests
+                        format: errorMessage,
+                        showUser: false,
+                    });
+                } else {
+                    this.sendErrorResponse(response, 1, errorMessage);
+                }
             }
         }
     }
@@ -2833,69 +3131,6 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
             return Boolean(varValue);
         } else {
             return varValue;
-        }
-    }
-
-    /**
-     * Implement the cdt-gdb-adapter/Memory request.
-     */
-    protected async memoryRequest(response: MemoryResponse, args: any) {
-        // Check if debug adapter is in a state to proceed with the request.
-        // Skip request without an error if not, it very likely means the
-        // session is about to end.
-        if (!this.canRequestProceed()) {
-            this.logger.verbose(
-                'Debug adapter cannot process memory request, skipping it.'
-            );
-            this.sendResponse(response);
-            return;
-        }
-
-        try {
-            if (typeof args.address !== 'string') {
-                throw new Error(
-                    `Invalid type for 'address', expected string, got ${typeof args.address}`
-                );
-            }
-
-            if (typeof args.length !== 'number') {
-                throw new Error(
-                    `Invalid type for 'length', expected number, got ${typeof args.length}`
-                );
-            }
-
-            if (
-                typeof args.offset !== 'number' &&
-                typeof args.offset !== 'undefined'
-            ) {
-                throw new Error(
-                    `Invalid type for 'offset', expected number or undefined, got ${typeof args.offset}`
-                );
-            }
-
-            const typedArgs = args as MemoryRequestArguments;
-
-            await this.ensureThreadStoppedForRequest();
-            const result = await mi.sendDataReadMemoryBytes(
-                this.gdb,
-                typedArgs.address,
-                typedArgs.length,
-                typedArgs.offset
-            );
-            response.body = {
-                data: result.memory[0].contents,
-                address: result.memory[0].begin,
-            };
-            this.sendResponse(response);
-        } catch (err) {
-            const errorMessage =
-                err instanceof Error ? err.message : String(err);
-            if (!this.shouldReportError(err)) {
-                this.logger.verbose(errorMessage);
-                this.sendResponse(response);
-                return;
-            }
-            this.sendErrorResponse(response, 1, errorMessage);
         }
     }
 
@@ -3069,6 +3304,8 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
             }
             await mi.sendDataWriteMemoryBytes(gdb, memoryReference, hexContent);
             this.sendResponse(response);
+            // inform to Variables view that need to refresh data on the view
+            this.sendEvent(new InvalidatedEvent(['variables']));
         } catch (err) {
             const errorMessage =
                 err instanceof Error ? err.message : String(err);
@@ -3131,15 +3368,30 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                     );
                     mi.sendExecContinue(this.gdb);
                 } else {
-                    const reason =
-                        this.functionBreakpoints.indexOf(result.bkptno) > -1
-                            ? 'function breakpoint'
-                            : 'breakpoint';
-                    this.sendStoppedEvent(
-                        reason,
-                        getThreadId(result),
-                        getAllThreadsStopped(result)
-                    );
+                    const sendStoppedEvent = (reason: string) =>
+                        this.sendStoppedEvent(
+                            reason,
+                            getThreadId(result),
+                            getAllThreadsStopped(result)
+                        );
+                    if (this.functionBreakpoints.indexOf(result.bkptno) > -1) {
+                        sendStoppedEvent('function breakpoint');
+                    } else {
+                        void this.isInstructionBreakpoint(result.bkptno)
+                            .then((isInstructionBreakpoint) =>
+                                sendStoppedEvent(
+                                    isInstructionBreakpoint
+                                        ? 'instruction breakpoint'
+                                        : 'breakpoint'
+                                )
+                            )
+                            .catch((err) => {
+                                logger.warn(
+                                    `Failed to determine breakpoint type: ${err}`
+                                );
+                                sendStoppedEvent('breakpoint');
+                            });
+                    }
                 }
                 break;
             case 'end-stepping-range':
@@ -3220,6 +3472,18 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         return requestsToResolve.length > 0;
     }
 
+    private updateIsRunning() {
+        const newIsRunning = this.threads.some((t) => t.running === false) // have stopped
+            ? false
+            : this.threads.some((t) => t.running === undefined) // have unknown
+              ? undefined
+              : this.threads.some((t) => t.running === true); // have running
+        if (newIsRunning !== undefined) {
+            this.isRunning = newIsRunning;
+        }
+        // else leave this.isRunning at its previous known value
+    }
+
     protected handleGDBAsync(resultClass: string, resultData: any) {
         switch (resultClass) {
             case 'running':
@@ -3236,13 +3500,28 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                         thread.running = true;
                     }
                 }
-                this.updateIsRunningFromThreads();
-                if (this.isInitialized) {
+                this.updateIsRunning();
+                if (this.configuringState == ConfiguringState.DONE) {
                     this.handleGDBResume(resultData);
+                } else {
+                    // while we are deferring events, cancel previous stop events for the same thread
+                    if (this.deferredStopEvents.length > 0) {
+                        if (resultData['thread-id'] === 'all') {
+                            this.deferredStopEvents.splice(0);
+                        } else if (resultData['thread-id'] !== undefined) {
+                            this.deferredStopEvents =
+                                this.deferredStopEvents.filter(
+                                    (stopResultData) =>
+                                        stopResultData['thread-id'] !==
+                                        resultData['thread-id']
+                                );
+                        }
+                    }
                 }
                 break;
             case 'stopped': {
                 let suppressHandleGDBStopped = false;
+                let newThreadsConfirmed = false;
                 if (this.gdb.isNonStopMode()) {
                     const id = parseInt(resultData['thread-id'], 10);
                     const allThreadsStopped =
@@ -3275,6 +3554,9 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                     }
                 } else {
                     for (const thread of this.threads) {
+                        if (thread.running === undefined) {
+                            newThreadsConfirmed = true;
+                        }
                         thread.running = false;
                         thread.lastRunToken = undefined;
                     }
@@ -3300,15 +3582,18 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                 }
 
                 const wasRunning = this.isRunning;
-                this.updateIsRunningFromThreads();
+                this.updateIsRunning();
                 this.resolveStoppedStateRequests();
                 if (
                     !suppressHandleGDBStopped &&
                     (this.gdb.isNonStopMode() ||
+                        newThreadsConfirmed ||
                         (wasRunning && !this.isRunning))
                 ) {
-                    if (this.isInitialized) {
+                    if (this.configuringState == ConfiguringState.DONE) {
                         this.handleGDBStopped(resultData);
+                    } else {
+                        this.deferredStopEvents.push(resultData);
                     }
                 }
                 break;
@@ -3341,14 +3626,14 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         switch (notifyClass) {
             case 'thread-created':
                 this.threads.push(this.convertThread(notifyData));
+                this.updateIsRunning();
                 this.missingThreadNames = true;
-                this.updateIsRunningFromThreads();
                 break;
             case 'thread-exited': {
                 const thread: mi.MIThreadInfo = notifyData;
                 const exitId = parseInt(thread.id, 10);
                 this.threads = this.threads.filter((t) => t.id !== exitId);
-                this.updateIsRunningFromThreads();
+                this.updateIsRunning();
                 this.resolveStoppedStateRequests();
                 break;
             }
@@ -3428,6 +3713,21 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
             case 'cmd-param-changed':
                 this.handleCmdParamChanged(notifyData);
                 break;
+            case 'memory-changed': {
+                if (!this.supportsMemoryEvent) {
+                    break;
+                }
+                let length = 0;
+                if (isNaN(notifyData.len)) {
+                    logger.warn(
+                        `GDB notify "memory-changed" has invalid length: ${notifyData.len}`
+                    );
+                }
+                length = parseInt(notifyData.len);
+                const memoryEvent = new MemoryEvent(notifyData.addr, 0, length);
+                this.sendEvent(memoryEvent);
+                break;
+            }
             default:
                 logger.warn(
                     `GDB unhandled notify: ${notifyClass}: ${JSON.stringify(
@@ -3490,7 +3790,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                 }
                 // Clear affected threads' running state
                 stopThreads.forEach((thread) => (thread.running = false));
-                this.updateIsRunningFromThreads();
+                this.updateIsRunning();
                 this.resolveStoppedStateRequests();
                 if (stopAll) {
                     // All threads are stopped
@@ -3530,7 +3830,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         }
 
         // dereference the frame handle
-        const frameRef = this.frameHandles.get(ref.frameHandle);
+        const frameRef = this.resolveFrameRef(ref.frameHandle);
         if (!frameRef) {
             return Promise.resolve(variables);
         }
@@ -3545,6 +3845,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
             threadId: frameRef.threadId,
         });
         const depth = parseInt(stackDepth.depth, 10);
+        await this.gdb.varManager.prepareFrame(frameRef, depth);
 
         // array of varnames to delete. Cannot delete while iterating through the vars array below.
         const toDelete = new Array<string>();
@@ -3557,6 +3858,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                 if (varobj.isVar && !varobj.isChild) {
                     // request update from GDB
                     const vup = await mi.sendVarUpdate(this.gdb, {
+                        frameRef,
                         name: varobj.varname,
                     });
                     // if changelist is length 0, update is undefined
@@ -3584,7 +3886,11 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                         let value = varobj.value;
                         // if we have an array parent entry, we need to display the address.
                         if (arrayRegex.test(varobj.type)) {
-                            value = await this.getAddr(varobj, this.gdb);
+                            value = await this.getAddr(
+                                varobj,
+                                this.gdb,
+                                frameRef
+                            );
                         }
                         variables.push({
                             name: varobj.expression,
@@ -3616,6 +3922,9 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                 printValues: 'simple-values',
             });
             for (const variable of result.variables) {
+                if (variable.shadowed === 'true') {
+                    continue;
+                }
                 let varobj = this.gdb.varManager.getVar(
                     frameRef,
                     depth,
@@ -3647,7 +3956,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                 let value = varobj.value;
                 // if we have an array parent entry, we need to display the address.
                 if (arrayRegex.test(varobj.type)) {
-                    value = await this.getAddr(varobj, this.gdb);
+                    value = await this.getAddr(varobj, this.gdb, frameRef);
                 }
                 variables.push({
                     name: varobj.expression,
@@ -3675,11 +3984,13 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         // initialize variables array
         const variables: DebugProtocol.Variable[] = [];
         // dereference the frame handle
-        const initialFrameRef = this.frameHandles.get(ref.frameHandle);
+        const initialFrameRef = this.resolveFrameRef(ref.frameHandle);
         const [gdb, frameRef, depth, isAux] =
             await this.getFrameContext(initialFrameRef);
 
         if (!isAux && !frameRef) {
+            // Stale DAP handle after continue, or watch/repl with no frame
+            // (DAP frameId -1). Both are undefined on purpose.
             return Promise.resolve(variables);
         }
 
@@ -3697,6 +4008,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
             children = await mi.sendVarListChildren(gdb, {
                 name: varobj.varname,
                 printValues: mi.MIVarPrintValues.all,
+                frameRef,
             });
             parentVarname = varobj.varname;
         } else {
@@ -3704,30 +4016,43 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
             children = await mi.sendVarListChildren(gdb, {
                 name: ref.varobjName,
                 printValues: mi.MIVarPrintValues.all,
+                frameRef,
             });
         }
         // Grab the full path of parent.
-        const topLevelPathExpression =
-            varobj?.expression ??
-            (await this.getFullPathExpression(parentVarname, gdb));
+        let topLevelPathExpression = varobj?.expression;
+        // When -var-info-path-expression returns '', it's probably an anonymous
+        // struct or union - strip trailing .-separated components from the
+        // varobj name until we reach a non-anonymous ancestor
+        while (!topLevelPathExpression && parentVarname) {
+            topLevelPathExpression = await this.getFullPathExpression(
+                parentVarname,
+                gdb,
+                frameRef
+            );
+            parentVarname = parentVarname.substring(
+                0,
+                parentVarname.lastIndexOf('.')
+            );
+        }
 
         // iterate through the children
         for (const child of children.children) {
             // check if we're dealing with a C++ object. If we are, we need to fetch the grandchildren instead.
             const isClass = this.isChildOfClass(child);
             if (isClass) {
-                const name = `${parentVarname}.${child.exp}`;
                 const objChildren = await mi.sendVarListChildren(gdb, {
-                    name,
+                    name: child.name,
                     printValues: mi.MIVarPrintValues.all,
+                    frameRef,
                 });
-                // Append the child path to the top level full path.
-                const parentClassName = `${topLevelPathExpression}.${child.exp}`;
                 for (const objChild of objChildren.children) {
-                    const childName = `${name}.${objChild.exp}`;
                     variables.push({
                         name: objChild.exp,
-                        evaluateName: `${parentClassName}.${objChild.exp}`,
+                        // Append the grandchild path to the top level full path, without intervening 'public' etc. (child.exp)
+                        evaluateName: objChild.exp.startsWith('<anonymous ')
+                            ? topLevelPathExpression
+                            : `${topLevelPathExpression}.${objChild.exp}`,
                         value: objChild.value ? objChild.value : objChild.type,
                         type: objChild.type,
                         variablesReference:
@@ -3735,27 +4060,26 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                                 ? this.variableHandles.create({
                                       type: 'object',
                                       frameHandle: ref.frameHandle,
-                                      varobjName: childName,
+                                      varobjName: objChild.name,
                                   })
                                 : 0,
                     });
                 }
             } else {
                 // check if we're dealing with an array
-                let name = `${ref.varobjName}.${child.exp}`;
-                const varobjName = name;
                 const value = child.value ? child.value : child.type;
                 const isArrayChild =
                     arrayChildRegex.test(child.exp) &&
                     (!varobj || arrayRegex.test(varobj.type));
-                if (isArrayChild) {
-                    // update the display name for array elements to have square brackets
-                    name = `[${child.exp}]`;
-                }
-                const variableName = isArrayChild ? name : child.exp;
+                // update the display name for array elements to have square brackets
+                const variableName = isArrayChild
+                    ? `[${child.exp}]`
+                    : child.exp;
                 const evaluateName = isArrayChild
                     ? `${topLevelPathExpression}[${child.exp}]`
-                    : `${topLevelPathExpression}.${child.exp}`;
+                    : child.exp.startsWith('<anonymous ')
+                      ? topLevelPathExpression
+                      : `${topLevelPathExpression}.${child.exp}`;
                 variables.push({
                     name: variableName,
                     evaluateName,
@@ -3766,7 +4090,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
                             ? this.variableHandles.create({
                                   type: 'object',
                                   frameHandle: ref.frameHandle,
-                                  varobjName,
+                                  varobjName: child.name,
                               })
                             : 0,
                 });
@@ -3778,11 +4102,13 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
     /** Query GDB using varXX name to get complete variable name */
     protected async getFullPathExpression(
         inputVarName: string,
-        gdb: IGDBBackend
+        gdb: IGDBBackend,
+        frameRef?: FrameReference
     ) {
         const exprResponse = await mi.sendVarInfoPathExpression(
             gdb,
-            inputVarName
+            inputVarName,
+            frameRef
         );
         // result from GDB looks like (parentName).field so remove ().
         return exprResponse.path_expr.replace(/[()]/g, '');
@@ -3809,7 +4135,7 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         }
 
         // dereference the frame handle
-        const frameRef = this.frameHandles.get(ref.frameHandle);
+        const frameRef = this.resolveFrameRef(ref.frameHandle);
         if (!frameRef) {
             return Promise.resolve(variables);
         }
@@ -3854,10 +4180,15 @@ export abstract class GDBDebugSessionBase extends LoggingDebugSession {
         return Promise.resolve(variables);
     }
 
-    protected async getAddr(varobj: VarObjType, gdb: IGDBBackend) {
+    protected async getAddr(
+        varobj: VarObjType,
+        gdb: IGDBBackend,
+        frameRef?: FrameReference
+    ) {
         const addr = await mi.sendDataEvaluateExpression(
             gdb,
-            `&(${varobj.expression})`
+            `&(${varobj.expression})`,
+            frameRef
         );
         return addr.value ? addr.value : varobj.value;
     }

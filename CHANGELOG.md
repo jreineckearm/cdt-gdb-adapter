@@ -1,5 +1,39 @@
 # Change Log
 
+## 2.0.0
+
+- Implements [`#571`](https://github.com/eclipse-cdt-cloud/cdt-gdb-adapter/pull/571): Remove custom request `cdt-gdb-adapter/Memory` this was only used by the [now removed](https://github.com/eclipse-cdt-cloud/cdt-gdb-vscode/pull/255) memory browser. The [Memory inspector](https://github.com/eclipse-cdt-cloud/vscode-memory-inspector) uses the standard memory operations.
+- Fixes [`#582`](https://github.com/eclipse-cdt-cloud/cdt-gdb-adapter/pull/582): Add missing --frame --thread MI args
+- Fixes [`#574`](https://github.com/eclipse-cdt-cloud/cdt-gdb-adapter/pull/574): Refresh variable cache when lexical scope changes
+- Fixes [`#575`](https://github.com/eclipse-cdt-cloud/cdt-gdb-adapter/pull/575): Exit GDB even when detach fails
+- Fixes [`#572`](https://github.com/eclipse-cdt-cloud/cdt-gdb-adapter/pull/572): Report instruction breakpoint stop reasons
+- Fixes [`#565`](https://github.com/eclipse-cdt-cloud/cdt-gdb-adapter/pull/565): Invalidate variables after writing memory
+
+## 1.10.0
+
+- Implements [`#528`](https://github.com/eclipse-cdt-cloud/cdt-gdb-adapter/issues/528): Add `run` setting to configure if stopped threads are set running or kept stopped on attach.
+- Implements [`#539`](https://github.com/eclipse-cdt-cloud/cdt-gdb-adapter/issues/539): Extend `evaluate` response by `memoryReference` field where possible and if supported by client. A client can use this to determine if an expression maps to a memory address.
+- Implements [`#550`](https://github.com/eclipse-cdt-cloud/cdt-gdb-adapter/pull/550): Allow override of capabilities reported by `GDBDebugSessionBase` class.
+- Implements [`#560`](https://github.com/eclipse-cdt-cloud/cdt-gdb-adapter/issues/560): Support `completions` request for GDB CLI commands (with `>` prefix). This enables auto-completion features in the IDE, for example in a debug console.
+- Fixes [cdt-gdb-vscode `#230`](https://github.com/eclipse-cdt-cloud/cdt-gdb-vscode/issues/230): Fixes variables display of anonymous unions/structs.
+- Fixes [`#545`](https://github.com/eclipse-cdt-cloud/cdt-gdb-adapter/issues/545): Skip error pop-up when `evaluate` request context is repl (e.g. Debug Console).
+- Fixes [`#549`](https://github.com/eclipse-cdt-cloud/cdt-gdb-adapter/pull/549): Handle exceptions from `pause` request.
+- Fixes [`#558`](https://github.com/eclipse-cdt-cloud/cdt-gdb-adapter/pull/558): Fixes exception when setting a watchpoint while multi-location breakpoints are set.
+- chore [`#561`](https://github.com/eclipse-cdt-cloud/cdt-gdb-adapter/pull/561): Updated various production and development dependencies. Pin first-level dependencies to exact package versions to avoid unwanted version updates.
+- Adds support for `evaluate` requests without frame ID for GDB CLI commands (with `>` prefix) for `gdb` type. Previously was only enabled for `gdbtarget` type.
+- Notable code changes:
+    - Add an overridable `getCapabilities` method on `GDBDebugSessionBase` for configuring capabilities in the `initialize` response.
+    - The `alwaysAllowCliCommand` argument of the overridable `doEvaluateRequest` method on `GDBDebugSessionBase` is now redundant but is retained for backward compatibility.
+    - The overridable `sendCommandToGdb` method on `GDBDebugSessionBase` now returns a `Promise<any>` containing the command result instead of a `Promise<void>`.
+
+## 1.9.0
+
+- Implements [`#526`](https://github.com/eclipse-cdt-cloud/cdt-gdb-adapter/issues/526): Handle memory-changed notifications
+- Implements [`#527`](https://github.com/eclipse-cdt-cloud/cdt-gdb-adapter/issues/527): Support setting expression values
+- Implements [`#538`](https://github.com/eclipse-cdt-cloud/cdt-gdb-adapter/issues/538): Add support for breakpointLocations request
+- Fixes [`#219`](https://github.com/eclipse-cdt-cloud/cdt-gdb-vscode/issues/219): Synchronize global radix change between debug console and context menus
+- Fixes [`#218`](https://github.com/eclipse-cdt-cloud/cdt-gdb-vscode/issues/218): Race condition when using breakpoint modes to set HW/SW breaks
+
 ## 1.8.1
 
 - Fixes [`#530`](https://github.com/eclipse-cdt-cloud/cdt-gdb-adapter/issues/530): Bump publish job to Node 24 to work around an npm self-upgrade crash that prevented 1.8.0 from being published to npm.

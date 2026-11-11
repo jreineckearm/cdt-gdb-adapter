@@ -31,7 +31,7 @@ class TestGDBSession extends GDBDebugSessionBase {
     constructor(sandbox: sinon.SinonSandbox) {
         const mockFactory: IGDBBackendFactory = {} as any;
         super(mockFactory);
-        this.gdb = {};
+        this.gdb = { isNonStopMode: () => false };
 
         this.sendResponseStub = sandbox.stub();
         this.sendResponse = this.sendResponseStub;
